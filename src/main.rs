@@ -48,6 +48,7 @@ async fn inverter_task() -> Result<(), Error> {
 
 #[tokio::main]
 async fn main() -> Result< (), Error>{
+    TwoGreenSunsDispatcherConfiguration::ensure_directory_configuration();
     let mut interval = time::interval(time::Duration::from_secs(10));
     loop {
         interval.tick().await;
