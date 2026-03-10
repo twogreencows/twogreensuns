@@ -10,17 +10,28 @@ mod tesla;
 
 use std::sync::Arc;
 
-use tracing::debug;
+use clap::Parser;
+use tracing::{debug, info};
 use tracing_subscriber::{filter::LevelFilter, fmt, layer::SubscriberExt, reload, util::SubscriberInitExt};
 
 use crate::app_state::{AppState, LogLevelSetter};
 use crate::configuration::TwoGreenSunsDispatcherConfiguration;
 use crate::dispatcher::dispatcher_run;
 use crate::http_api::http_api_run;
-use crate::mdns::mdns_run;
+use crate::mdns::{mdns_get_hostname, mdns_run};
+
+#[derive(Parser)]
+#[command(about = "TwoGreenSuns home energy management server")]
+struct TGSToolArgs {
+    /// Disable Bonjour/mDNS advertising
+    #[arg(long)]
+    no_bonjour: bool,
+}
 
 #[tokio::main]
 async fn main() {
+    let args = TGSToolArgs::parse();
+
     let level = std::env::var("TWOGREENSUNS_LOG")
         .ok()
         .and_then(|v| v.parse::<LevelFilter>().ok())
@@ -44,14 +55,23 @@ async fn main() {
     TwoGreenSunsDispatcherConfiguration::ensure_directory_configuration();
     let config = TwoGreenSunsDispatcherConfiguration::load_last_configuration();
     let port = config.http_port;
-    let hostname = config.mdns_hostname.clone();
+    let hostname = mdns_get_hostname();
+    info!("[main:main] mDNS hostname: {}", hostname);
 
     let state = Arc::new(AppState::new(config, log_level_setter));
 
-    debug!("[main:main] Spawning dispatcher, HTTP API, and mDNS");
-    tokio::join!(
-        dispatcher_run(state.clone()),
-        http_api_run(state.clone(), port),
-        mdns_run(hostname, port),
-    );
+    if args.no_bonjour {
+        info!("[main:main] Bonjour/mDNS disabled");
+        tokio::join!(
+            dispatcher_run(state.clone()),
+            http_api_run(state.clone(), port),
+        );
+    } else {
+        debug!("[main:main] Spawning dispatcher, HTTP API, and mDNS");
+        tokio::join!(
+            dispatcher_run(state.clone()),
+            http_api_run(state.clone(), port),
+            mdns_run(hostname, port),
+        );
+    }
 }

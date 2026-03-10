@@ -1,14 +1,98 @@
-use std::net::{Ipv4Addr, SocketAddr};
+// mDNS advertising + hostname detection — two implementations selected at compile time:
+//   macOS : dns-sd crate → delegates to the system's mDNSResponder via Bonjour C API
+//   Linux : raw UDP multicast socket (works fine; no system daemon owns port 5353)
 
-use tokio::net::UdpSocket;
-use tokio::time::Duration;
-use tracing::{debug, error, info};
+// ──────────────────────────────────────────────────────────────────────────────
+// Hostname detection
+// ──────────────────────────────────────────────────────────────────────────────
 
-const MDNS_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
-const MDNS_PORT: u16 = 5353;
+/// Returns the machine hostname via `sysctl kern.hostname` on macOS.
+#[cfg(target_os = "macos")]
+pub fn mdns_get_hostname() -> String {
+    use sysctl::{Ctl, CtlValue, Sysctl};
+    match Ctl::new("kern.hostname").and_then(|ctl| ctl.value()) {
+        Ok(CtlValue::String(name)) => name,
+        _ => {
+            tracing::warn!("[mdns:mdns_get_hostname] sysctl kern.hostname failed, using fallback");
+            "twogreensuns".to_string()
+        }
+    }
+}
 
+/// Returns the machine hostname by reading `/etc/hostname` on Linux (Raspberry Pi OS / Debian).
+#[cfg(not(target_os = "macos"))]
+pub fn mdns_get_hostname() -> String {
+    match std::fs::read_to_string("/etc/hostname") {
+        Ok(name) => name.trim().to_string(),
+        Err(e) => {
+            tracing::warn!("[mdns:mdns_get_hostname] /etc/hostname unreadable ({}), using fallback", e);
+            "twogreensuns".to_string()
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// macOS implementation
+// ──────────────────────────────────────────────────────────────────────────────
+#[cfg(target_os = "macos")]
 pub async fn mdns_run(hostname: String, port: u16) {
-    debug!("[mdns:mdns_run] Enter");
+    use dns_sd::DNSService;
+    use tracing::{debug, error, info};
+
+    debug!("[mdns:mdns_run] Enter (macOS / Bonjour)");
+
+    let service_name = hostname.clone();
+
+    debug!(
+        "  --> registering {} on port {} via DNSServiceRegister",
+        service_name, port
+    );
+
+    let svc = DNSService::register(
+        Some(&service_name),   // instance name shown in discovery
+        "_twogreensuns._tcp",  // service type (no .local. — dns-sd adds it)
+        None,                  // domain  → default (.local.)
+        None,                  // host    → this machine's hostname
+        port,
+        &[],                   // TXT records
+    );
+
+    match svc {
+        Err(e) => {
+            error!("[mdns:mdns_run] DNSServiceRegister failed: {:?}", e);
+            return;
+        }
+        Ok(svc) => {
+            info!(
+                "[mdns:mdns_run] Advertising {}:{} as _twogreensuns._tcp.local.",
+                hostname, port
+            );
+            // Keep the registration alive until the task is cancelled.
+            // dns-sd drops the registration when DNSService is dropped.
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
+                debug!("[mdns:mdns_run] Still alive (Bonjour handles re-announcements)");
+                // Reference svc so it is not dropped before the loop.
+                let _ = &svc;
+            }
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Linux implementation (raw UDP multicast — original code)
+// ──────────────────────────────────────────────────────────────────────────────
+#[cfg(not(target_os = "macos"))]
+pub async fn mdns_run(hostname: String, port: u16) {
+    use std::net::{Ipv4Addr, SocketAddr};
+    use tokio::net::UdpSocket;
+    use tokio::time::Duration;
+    use tracing::{debug, error, info};
+
+    const MDNS_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
+    const MDNS_PORT: u16 = 5353;
+
+    debug!("[mdns:mdns_run] Enter (Linux / raw UDP)");
 
     debug!("  --> binding UDP socket on 0.0.0.0:{}", MDNS_PORT);
     let socket = UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], MDNS_PORT)))
@@ -59,7 +143,22 @@ pub async fn mdns_run(hostname: String, port: u16) {
     }
 }
 
-async fn mdns_announce(socket: &UdpSocket, service_name: &str, fqdn: &str, port: u16) {
+// ──────────────────────────────────────────────────────────────────────────────
+// Helpers used only by the Linux path
+// ──────────────────────────────────────────────────────────────────────────────
+#[cfg(not(target_os = "macos"))]
+async fn mdns_announce(
+    socket: &tokio::net::UdpSocket,
+    service_name: &str,
+    fqdn: &str,
+    port: u16,
+) {
+    use std::net::{Ipv4Addr, SocketAddr};
+    use tracing::{debug, error};
+
+    const MDNS_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
+    const MDNS_PORT: u16 = 5353;
+
     debug!("[mdns:mdns_announce] Enter");
     debug!("  --> service_name={} fqdn={} port={}", service_name, fqdn, port);
     let packet = mdns_build_response(service_name, fqdn, port);
@@ -70,18 +169,20 @@ async fn mdns_announce(socket: &UdpSocket, service_name: &str, fqdn: &str, port:
     debug!("[mdns:mdns_announce] Exit");
 }
 
+#[cfg(not(target_os = "macos"))]
 fn mdns_handle_query(
     packet: &[u8],
     service_name: &str,
     fqdn: &str,
     port: u16,
 ) -> Option<Vec<u8>> {
+    use tracing::debug;
+
     debug!("[mdns:mdns_handle_query] Enter");
     if packet.len() < 12 {
         debug!("[mdns:mdns_handle_query] Exit (packet too short)");
         return None;
     }
-    // QR bit = 0 means this is a query
     let flags = u16::from_be_bytes([packet[2], packet[3]]);
     if (flags >> 15) != 0 {
         debug!("[mdns:mdns_handle_query] Exit (not a query, ignoring)");
@@ -99,12 +200,11 @@ fn mdns_handle_query(
     }
 }
 
-/// Builds a minimal mDNS response containing PTR, SRV, and A records.
+#[cfg(not(target_os = "macos"))]
 pub fn mdns_build_response(service_name: &str, fqdn: &str, port: u16) -> Vec<u8> {
     let mut pkt = Vec::new();
 
-    // DNS Header
-    pkt.extend_from_slice(&[0x00, 0x00]); // Transaction ID (0 for mDNS)
+    pkt.extend_from_slice(&[0x00, 0x00]); // Transaction ID
     pkt.extend_from_slice(&[0x84, 0x00]); // Flags: QR=1, Authoritative=1
     pkt.extend_from_slice(&[0x00, 0x00]); // QDCOUNT = 0
     pkt.extend_from_slice(&[0x00, 0x03]); // ANCOUNT = 3
@@ -113,7 +213,7 @@ pub fn mdns_build_response(service_name: &str, fqdn: &str, port: u16) -> Vec<u8>
 
     let service_type = "_twogreensuns._tcp.local.";
 
-    // PTR record: _twogreensuns._tcp.local. → service_name
+    // PTR record
     mdns_append_name(&mut pkt, service_type);
     pkt.extend_from_slice(&[0x00, 0x0C]); // TYPE = PTR
     pkt.extend_from_slice(&[0x00, 0x01]); // CLASS = IN
@@ -122,7 +222,7 @@ pub fn mdns_build_response(service_name: &str, fqdn: &str, port: u16) -> Vec<u8>
     pkt.extend_from_slice(&(ptr_rdata.len() as u16).to_be_bytes());
     pkt.extend_from_slice(&ptr_rdata);
 
-    // SRV record: service_name → fqdn:port
+    // SRV record
     mdns_append_name(&mut pkt, service_name);
     pkt.extend_from_slice(&[0x00, 0x21]); // TYPE = SRV
     pkt.extend_from_slice(&[0x00, 0x01]); // CLASS = IN
@@ -135,7 +235,7 @@ pub fn mdns_build_response(service_name: &str, fqdn: &str, port: u16) -> Vec<u8>
     pkt.extend_from_slice(&port.to_be_bytes());
     pkt.extend_from_slice(&fqdn_encoded);
 
-    // A record: fqdn → 0.0.0.0 (placeholder — real IP needs interface detection)
+    // A record (placeholder IP)
     mdns_append_name(&mut pkt, fqdn);
     pkt.extend_from_slice(&[0x00, 0x01]); // TYPE = A
     pkt.extend_from_slice(&[0x00, 0x01]); // CLASS = IN
@@ -146,7 +246,7 @@ pub fn mdns_build_response(service_name: &str, fqdn: &str, port: u16) -> Vec<u8>
     pkt
 }
 
-/// Extracts question names from a DNS query packet (best-effort, no pointer compression).
+#[cfg(not(target_os = "macos"))]
 pub fn mdns_parse_query(packet: &[u8]) -> Vec<String> {
     if packet.len() < 12 {
         return vec![];
@@ -159,7 +259,7 @@ pub fn mdns_parse_query(packet: &[u8]) -> Vec<String> {
         match mdns_read_name(packet, pos) {
             Some((name, next_pos)) => {
                 questions.push(name);
-                pos = next_pos + 4; // skip QTYPE (2) + QCLASS (2)
+                pos = next_pos + 4;
             }
             None => break,
         }
@@ -167,20 +267,23 @@ pub fn mdns_parse_query(packet: &[u8]) -> Vec<String> {
     questions
 }
 
+#[cfg(not(target_os = "macos"))]
 fn mdns_encode_name(name: &str) -> Vec<u8> {
     let mut out = Vec::new();
     for label in name.trim_end_matches('.').split('.') {
         out.push(label.len() as u8);
         out.extend_from_slice(label.as_bytes());
     }
-    out.push(0x00); // root label
+    out.push(0x00);
     out
 }
 
+#[cfg(not(target_os = "macos"))]
 fn mdns_append_name(pkt: &mut Vec<u8>, name: &str) {
     pkt.extend_from_slice(&mdns_encode_name(name));
 }
 
+#[cfg(not(target_os = "macos"))]
 fn mdns_read_name(packet: &[u8], start: usize) -> Option<(String, usize)> {
     let mut pos = start;
     let mut labels: Vec<String> = Vec::new();
@@ -190,7 +293,6 @@ fn mdns_read_name(packet: &[u8], start: usize) -> Option<(String, usize)> {
         if len == 0 {
             return Some((labels.join("."), pos + 1));
         }
-        // DNS pointer compression (0xC0 prefix) — not followed, stop here
         if len & 0xC0 == 0xC0 {
             return Some((labels.join("."), pos + 2));
         }

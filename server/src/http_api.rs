@@ -18,14 +18,14 @@ pub async fn http_api_run(state: Arc<AppState>, port: u16) {
     debug!("  --> binding on port {}", port);
 
     let app = Router::new()
-        .route("/api/status", get(handle_status))
-        .route("/api/config", get(handle_get_config))
-        .route("/api/config", put(handle_put_config))
-        .route("/api/log/level", put(handle_put_log_level))
-        .route("/api/tesla/discover", post(handle_tesla_discover))
-        .route("/api/tesla/charge/start", post(handle_tesla_start))
-        .route("/api/tesla/charge/stop", post(handle_tesla_stop))
-        .route("/api/tesla/charge/amps/:n", post(handle_tesla_set_amps))
+        .route("/api/v1/status", get(handle_status))
+        .route("/api/v1/config", get(handle_get_config))
+        .route("/api/v1/config", put(handle_put_config))
+        .route("/api/v1/log/level", put(handle_put_log_level))
+        .route("/api/v1/tesla/discover", post(handle_tesla_discover))
+        .route("/api/v1/tesla/charge/start", post(handle_tesla_start))
+        .route("/api/v1/tesla/charge/stop", post(handle_tesla_stop))
+        .route("/api/v1/tesla/charge/amps/:n", post(handle_tesla_set_amps))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
