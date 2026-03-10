@@ -1,0 +1,31 @@
+name: TwoGreenSuns
+options:
+  bundleIdPrefix: co.twogreensuns
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "15"
+
+targets:
+  TwoGreenSuns:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - TwoGreenSuns
+    info:
+      path: TwoGreenSuns/Info.plist
+      properties:
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSLocalNetworkUsageDescription: "Used to discover and connect to the TwoGreenSuns server on your local network."
+        NSBonjourServices:
+          - _twogreensuns._tcp
+    settings:
+      base:
+        SWIFT_VERSION: 5.9
+        PRODUCT_BUNDLE_IDENTIFIER: co.twogreensuns.app
+        DEVELOPMENT_TEAM: ""
+        CODE_SIGN_STYLE: Automatic
