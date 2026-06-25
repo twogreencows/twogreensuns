@@ -10,10 +10,10 @@ use axum::{
 use serde_json::{json, Value};
 use tracing::{debug, info};
 
-use crate::app_state::AppState;
-use crate::configuration::TwoGreenSunsDispatcherConfiguration;
+use crate::application::TGSApplication;
+use crate::configuration::TGSDispatcherConfiguration;
 
-pub async fn http_api_run(state: Arc<AppState>, port: u16) {
+pub async fn http_api_run(state: Arc<TGSApplication>, port: u16) {
     debug!("[http_api:http_api_run] Enter");
     debug!("  --> binding on port {}", port);
 
@@ -22,10 +22,10 @@ pub async fn http_api_run(state: Arc<AppState>, port: u16) {
         .route("/api/v1/config", get(handle_get_config))
         .route("/api/v1/config", put(handle_put_config))
         .route("/api/v1/log/level", put(handle_put_log_level))
-        .route("/api/v1/tesla/discover", post(handle_tesla_discover))
-        .route("/api/v1/tesla/charge/start", post(handle_tesla_start))
-        .route("/api/v1/tesla/charge/stop", post(handle_tesla_stop))
-        .route("/api/v1/tesla/charge/amps/:n", post(handle_tesla_set_amps))
+        //.route("/api/v1/tesla/discover", post(handle_tesla_discover))
+        //.route("/api/v1/tesla/charge/start", post(handle_tesla_start))
+        //.route("/api/v1/tesla/charge/stop", post(handle_tesla_stop))
+        //.route("/api/v1/tesla/charge/amps/:n", post(handle_tesla_set_amps))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
@@ -36,7 +36,7 @@ pub async fn http_api_run(state: Arc<AppState>, port: u16) {
     axum::serve(listener, app).await.expect("HTTP server error");
 }
 
-async fn handle_status(State(state): State<Arc<AppState>>) -> Json<Value> {
+async fn handle_status(State(state): State<Arc<TGSApplication>>) -> Json<Value> {
     debug!("[http_api:handle_status] Enter");
     let inverter = state.inverter_state.read().await.clone();
     let tesla = state.tesla_state.read().await.clone();
@@ -48,30 +48,28 @@ async fn handle_status(State(state): State<Arc<AppState>>) -> Json<Value> {
 }
 
 async fn handle_get_config(
-    State(state): State<Arc<AppState>>,
-) -> Json<TwoGreenSunsDispatcherConfiguration> {
+    State(state): State<Arc<TGSApplication>>,
+) -> Json<TGSDispatcherConfiguration> {
     debug!("[http_api:handle_get_config] Enter");
-    let cfg = state.config.read().await.clone();
+    let configuration = state.runtime.read().await.config.clone();
     debug!("[http_api:handle_get_config] Exit");
-    Json(cfg)
+    Json(configuration)
 }
 
 async fn handle_put_config(
-    State(state): State<Arc<AppState>>,
-    Json(new_cfg): Json<TwoGreenSunsDispatcherConfiguration>,
+    State(state): State<Arc<TGSApplication>>,
+    Json(updated_configuration): Json<TGSDispatcherConfiguration>,
 ) -> StatusCode {
-    debug!("[http_api:handle_put_config] Enter");
+    debug!("[http_api:handle_put_config] Writing new configuration");
     debug!("  --> writing new configuration");
-    let mut cfg = state.config.write().await;
-    *cfg = new_cfg;
-    cfg.save();
-    info!("[http_api:handle_put_config] Configuration updated and saved");
-    debug!("[http_api:handle_put_config] Exit");
+    let mut runtime = state.runtime.write().await;
+    runtime.config = updated_configuration;
+    runtime.config.save();
     StatusCode::OK
 }
 
 async fn handle_put_log_level(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<TGSApplication>>,
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
     debug!("[http_api:handle_put_log_level] Enter");
@@ -98,12 +96,12 @@ async fn handle_put_log_level(
         }
     }
 }
-
-async fn handle_tesla_discover(State(state): State<Arc<AppState>>) -> StatusCode {
+/*
+async fn handle_tesla_discover(State(state): State<Arc<TGSApplication>>) -> StatusCode {
     debug!("[http_api:handle_tesla_discover] Enter");
     let vin = {
-        let cfg = state.config.read().await;
-        cfg.tesla_vin.clone().unwrap_or_default()
+        let runtime = state.runtime.read().await;
+        runtime.config.tesla_vin.clone().unwrap_or_default()
     };
     debug!("  --> discovering VIN '{}'", vin);
     let mut tesla = state.tesla.lock().await;
@@ -115,7 +113,7 @@ async fn handle_tesla_discover(State(state): State<Arc<AppState>>) -> StatusCode
     result
 }
 
-async fn handle_tesla_start(State(state): State<Arc<AppState>>) -> StatusCode {
+async fn handle_tesla_start(State(state): State<Arc<TGSApplication>>) -> StatusCode {
     debug!("[http_api:handle_tesla_start] Enter");
     let tesla = state.tesla.lock().await;
     let result = match tesla.start_charging().await {
@@ -126,7 +124,7 @@ async fn handle_tesla_start(State(state): State<Arc<AppState>>) -> StatusCode {
     result
 }
 
-async fn handle_tesla_stop(State(state): State<Arc<AppState>>) -> StatusCode {
+async fn handle_tesla_stop(State(state): State<Arc<TGSApplication>>) -> StatusCode {
     debug!("[http_api:handle_tesla_stop] Enter");
     let tesla = state.tesla.lock().await;
     let result = match tesla.stop_charging().await {
@@ -138,7 +136,7 @@ async fn handle_tesla_stop(State(state): State<Arc<AppState>>) -> StatusCode {
 }
 
 async fn handle_tesla_set_amps(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<TGSApplication>>,
     Path(n): Path<u8>,
 ) -> StatusCode {
     debug!("[http_api:handle_tesla_set_amps] Enter");
@@ -150,4 +148,4 @@ async fn handle_tesla_set_amps(
     };
     debug!("[http_api:handle_tesla_set_amps] Exit");
     result
-}
+}*/
