@@ -18,10 +18,10 @@ pub async fn http_api_run(state: Arc<TGSApplication>, port: u16) {
     debug!("  --> binding on port {}", port);
 
     let app = Router::new()
-        .route("/api/v1/status", get(handle_status))
+        .route("/api/v1/runtime", get(handle_get_runtime))
         .route("/api/v1/config", get(handle_get_config))
         .route("/api/v1/config", put(handle_put_config))
-        .route("/api/v1/log/level", put(handle_put_log_level))
+        //.route("/api/v1/log/level", put(handle_put_log_level))
         //.route("/api/v1/tesla/discover", post(handle_tesla_discover))
         //.route("/api/v1/tesla/charge/start", post(handle_tesla_start))
         //.route("/api/v1/tesla/charge/stop", post(handle_tesla_stop))
@@ -36,10 +36,13 @@ pub async fn http_api_run(state: Arc<TGSApplication>, port: u16) {
     axum::serve(listener, app).await.expect("HTTP server error");
 }
 
-async fn handle_status(State(state): State<Arc<TGSApplication>>) -> Json<Value> {
+async fn handle_get_runtime(State(state): State<Arc<TGSApplication>>) -> Json<Value> {
     debug!("[http_api:handle_status] Enter");
+    println!("http_api:handle_get_runtime] Enter");
     let inverter = state.inverter_state.read().await.clone();
+    println!("{:?}", inverter);
     let tesla = state.tesla_state.read().await.clone();
+    println!("{:?}", tesla);
     debug!("[http_api:handle_status] Exit");
     Json(json!({
         "inverter": inverter,
@@ -50,9 +53,10 @@ async fn handle_status(State(state): State<Arc<TGSApplication>>) -> Json<Value> 
 async fn handle_get_config(
     State(state): State<Arc<TGSApplication>>,
 ) -> Json<TGSDispatcherConfiguration> {
-    debug!("[http_api:handle_get_config] Enter");
+    println!("[http_api:handle_get_config] Enter");
     let configuration = state.runtime.read().await.config.clone();
-    debug!("[http_api:handle_get_config] Exit");
+    println!("{:?}", configuration);
+    println!("[http_api:handle_get_config] Exit");
     Json(configuration)
 }
 

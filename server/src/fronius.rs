@@ -36,7 +36,7 @@ pub async fn fronius_discover_address() -> Option<String> {
 /// is found it is written into the runtime and `inverter_address_notify` is
 /// fired so the dispatcher can unblock.  Retries every 30 seconds until the
 /// program exits.
-pub async fn fronius_discovery_run(state: Arc<TGSApplication>) {
+pub async fn inverter_discoverer_run(state: Arc<TGSApplication>) {
     loop {
         debug!("[fronius:fronius_discovery_run] Browsing for Fronius inverter...");
         if let Some(discovered_address) = fronius_discover_address().await {
@@ -62,6 +62,7 @@ pub async fn fronius_fetch_data( client: &reqwest::Client, base_url: &str) -> Re
     let url_meter = format!( "{}/solar_api/v1/GetMeterRealtimeData.cgi", base_url);
     let url_power = format!( "{}/solar_api/v1/GetPowerFlowRealtimeData.fcgi", base_url);
     debug!("  --> GET {} + {} (parallel)", url_meter, url_power);
+    println!("  --> GET {} + {} (parallel)", url_meter, url_power);
 
     let (result_meter, result_power) = tokio::join!(
         async { client.get(&url_meter).send().await?.json::<serde_json::Value>().await },
