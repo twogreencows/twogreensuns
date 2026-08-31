@@ -1,16 +1,19 @@
 import SwiftUI
 
 struct DashboardView: View {
-    @EnvironmentObject var viewModel: TGSEnvironnement
+    @EnvironmentObject var viewModel: TGSInstallationEnvironment
+
+    private let refreshInterval: Duration = .seconds(10)
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                if let status = viewModel.status {
+                if let runtime = viewModel.runtime {
                     VStack(spacing: 16) {
-                        if let inverter = status.inverter {
+                        if let inverter = runtime.inverter {
                             InverterCard(data: inverter)
                         } else {
+                            Image("inverter_fronius_gen24")
                             ContentUnavailableView(
                                 "No inverter data",
                                 systemImage: "exclamationmark.triangle",
@@ -18,7 +21,7 @@ struct DashboardView: View {
                             )
                         }
 
-                        if let tesla = status.tesla {
+                        if let tesla = runtime.tesla {
                             TeslaStatusCard(state: tesla)
                         }
                     }
@@ -34,57 +37,60 @@ struct DashboardView: View {
                     )
                 }
             }
-            .safeAreaInset(edge: .bottom) {
-                if !viewModel.discoveredServices.isEmpty {
-                    TGSDiscoveredServicesBar(services: viewModel.discoveredServices)
-                }
-            }
             .navigationTitle("Dashboard")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { Task { await viewModel.refreshStatus() } } label: {
+                    Button { Task { await viewModel.refreshRuntime() } } label: {
                         Image(systemName: "arrow.clockwise")
                     }
                 }
             }
-            .refreshable { await viewModel.refreshStatus() }
-        }
-    }
-}
-
-private struct TGSDiscoveredServicesBar: View {
-    let services: [TGSDiscoveredService]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Servers on network").font(.caption).foregroundStyle(.secondary)
-            ForEach(services) { svc in
-                Label {
-                    Text(svc.name).bold() + Text("  \(svc.baseURL)").foregroundStyle(.secondary)
-                } icon: {
-                    Image(systemName: "server.rack").foregroundStyle(.green)
+            .refreshable { await viewModel.refreshRuntime() }
+            .task {
+                await viewModel.refreshRuntime()
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: refreshInterval)
+                    guard !Task.isCancelled else { return }
+                    await viewModel.refreshRuntime()
                 }
-                .font(.caption)
             }
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.regularMaterial)
     }
 }
 
 private struct InverterCard: View {
-    let data: InverterData
+    let data: InverterData?
 
     var body: some View {
-        GroupBox("Solar Inverter") {
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-                PowerRow(label: "Solar (PV)", value: data.pPv, color: .yellow)
-                PowerRow(label: "House load", value: data.pLoad, color: .blue)
-                PowerRow(label: "Grid", value: data.pGrid, color: .orange)
-                PowerRow(label: "Battery", value: data.pAkku, color: .green)
+        GroupBox {
+            if let data {
+                VStack(spacing: 12) {
+                    Image("inverter_fronius_gen24")
+                        .frame(maxWidth: .infinity, alignment: .center)
+                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                        PowerRow(label: "Solar (PV)", value: data.pPv, color: .yellow)
+                        PowerRow(label: "House load", value: data.pLoad, color: .blue)
+                        PowerRow(label: "Grid", value: data.pGrid, color: .orange)
+                        PowerRow(label: "Battery", value: data.pAkku, color: .green)
+                    }
+                }
+            } else {
+                Image("inverter_fronius_gen24")
+                    .frame(maxWidth: .infinity, alignment: .center)
+                ContentUnavailableView(
+                    "No inverter data",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text("Waiting for the first poll cycle.")
+                )
             }
+        } label: {
+            Text(titleText)
         }
+    }
+
+    private var titleText: String {
+        guard let data else { return "Solar Inverter" }
+        return "Solar Inverter (\(data.timestamp.formatted(date: .omitted, time: .standard)))"
     }
 }
 
@@ -108,7 +114,9 @@ private struct TeslaStatusCard: View {
 
     var body: some View {
         GroupBox("Tesla") {
+            Image("tesla")
             LabeledContent("Connected", value: state.connected ? "Yes" : "No")
+            LabeledContent("Plugged", value: state.plugged ? "Yes" : "No")
             LabeledContent("Charging", value: state.charging ? "Yes" : "No")
             LabeledContent("Amps", value: "\(state.chargingAmps) A")
         }

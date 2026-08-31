@@ -4,71 +4,142 @@ struct TGSDiscoveredService: Identifiable, Hashable {
     let name: String
     let host: String
     let port: Int
+    let ipAddress: String
 
     var id: String { name }
-    var baseURL: String { "http://\(host):\(port)" }
+    var baseURL: String { "http://\(ipAddress):\(port)" }
 
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.name == rhs.name }
     func hash(into hasher: inout Hasher) { hasher.combine(name) }
 }
 
+
+
+
 struct InverterData: Codable {
+    let acVoltage:Double
+    let pAkku: Double
     let pPv: Double
     let pLoad: Double
     let pGrid: Double
-    let pAkku: Double
-    let timestamp: String
+    
+    let timestamp: Date
 
     enum CodingKeys: String, CodingKey {
         case pPv = "p_pv"
         case pLoad = "p_load"
         case pGrid = "p_grid"
         case pAkku = "p_akku"
-        case timestamp
+        case timestamp = "timestamp"
+        case  acVoltage = "ac_voltage"
     }
 }
 
 struct TeslaState: Codable {
     let connected: Bool
+    let plugged: Bool
     let charging: Bool
     let chargingAmps: Int
 
     enum CodingKeys: String, CodingKey {
-        case connected
-        case charging
+        case plugged = "plugged"
+        case connected = "connected"
+        case charging = "charging"
         case chargingAmps = "charging_amps"
     }
 }
 
-struct StatusResponse: Codable {
+
+struct RuntimeResponse: Codable {
+    //var uuid: String
     let inverter: InverterData?
     let tesla: TeslaState?
 }
 
-struct AppConfig: Codable {
-    var uuid: String
-    var inverterIpv4Address: String
+struct NaiveTime: Comparable {
+    let secondsSinceMidnight: Int
+
+    init(hour: Int, minute: Int, second: Int = 0) {
+        self.secondsSinceMidnight = hour * 3600 + minute * 60 + second
+    }
+
+    static func < (lhs: NaiveTime, rhs: NaiveTime) -> Bool {
+        lhs.secondsSinceMidnight < rhs.secondsSinceMidnight
+    }
+}
+
+struct TimeSegment: Codable {
+    var start: String
+    var end: String
+    var value: Double
+
+    init(start: String, end: String, value: Double) {
+        self.start = start
+        self.end = end
+        self.value = value
+    }
+
+    // Custom decoding: read the array positionally
+    init(from decoder: Decoder) throws {
+        var container = try decoder.unkeyedContainer()
+        start = try container.decode(String.self)
+        end = try container.decode(String.self)
+        value = try container.decode(Double.self)
+    }
+
+    // Custom encoding, if you need to write it back out
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.unkeyedContainer()
+        try container.encode(start)
+        try container.encode(end)
+        try container.encode(value)
+    }
+}
+
+struct TGSConfiguration: Codable {
     var installationDisplayName: String
     var installationLatitude: Double
     var installationLongitude: Double
-    var pollingIntervalMinutes: Int
+    var pollingIntervalSeconds: Int
     var teslaVin: String?
-    var teslaMaxAmps: Int
-    var httpPort: Int
-    var mdnsHostname: String
-    var useMockBle: Bool
-
+    var teslaMaxChargingAmps: Int
+    var providerCosts:[TimeSegment]
+    
     enum CodingKeys: String, CodingKey {
-        case uuid
-        case inverterIpv4Address = "inverter_ipv4_address"
         case installationDisplayName = "installation_display_name"
         case installationLatitude = "installation_latitude"
         case installationLongitude = "installation_longitude"
-        case pollingIntervalMinutes = "polling_interval_minutes"
+        case pollingIntervalSeconds = "polling_interval_seconds"
         case teslaVin = "tesla_vin"
-        case teslaMaxAmps = "tesla_max_amps"
-        case httpPort = "http_port"
-        case mdnsHostname = "mdns_hostname"
-        case useMockBle = "use_mock_ble"
+        case teslaMaxChargingAmps = "tesla_max_charging_amps"
+        case providerCosts = "provider_costs"
     }
+
+    var pollingIntervalMinutes: Double {
+        get { Double(pollingIntervalSeconds) / 60 }
+        set { pollingIntervalSeconds = Int(newValue * 60) }
+    }
+    
 }
+
+
+//struct AppConfig: Codable {
+//    
+//    
+//    
+//   // var httpPort: Int
+//  //  var mdnsHostname: String
+//
+//    enum CodingKeys: String, CodingKey {
+//        case uuid
+//        case inverterIpv4Address = "inverter_ipv4_address"
+//        case installationDisplayName = "installation_display_name"
+//        case installationLatitude = "installation_latitude"
+//        case installationLongitude = "installation_longitude"
+//        case pollingIntervalMinutes = "polling_interval_minutes"
+//        case teslaVin = "tesla_vin"
+//        case teslaMaxAmps = "tesla_max_amps"
+//        case httpPort = "http_port"
+//        case mdnsHostname = "mdns_hostname"
+//    }
+//}

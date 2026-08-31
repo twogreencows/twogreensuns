@@ -2,12 +2,12 @@ import SwiftUI
 
 @main
 struct TwoGreenSunsApp: App {
-    @StateObject private var viewModel = TGSEnvironnement()
+    @StateObject private var appEnvironment = TGSAppEnvironment()
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .environmentObject(viewModel)
+            TGSInstallationsView()
+                .environmentObject(appEnvironment)
         }
     }
 }

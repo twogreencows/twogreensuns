@@ -4,53 +4,114 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`twogreensuns` is a Rust-based home energy management dispatcher. It polls a Fronius solar inverter over HTTP and is being extended to control a Tesla vehicle via Bluetooth LE. The goal is to coordinate solar production, battery storage, and EV charging based on configurable rules and energy provider pricing.
+`twogreensuns` is a home energy management system consisting of:
+- **`server/`** — Rust async daemon (Tokio): polls a Fronius solar inverter and controls a Tesla via BLE
+- **`client-ios/`** — SwiftUI iOS app (Swift Package Manager, XcodeGen)
+- **`client-web/`** — Next.js 15 web dashboard (React, HeroUI, Tailwind)
+- **`client-android/`** — Jetpack Compose Android app (Kotlin, Retrofit)
 
 ## Build & Run Commands
 
 ```bash
-cargo build          # compile
-cargo run            # run the dispatcher
-cargo test           # run tests
-cargo clippy         # lint
-```
+# Server
+cd server && cargo build
+cd server && cargo run
+cd server && cargo test
+cd server && cargo clippy
 
-The inverter IP address is currently hardcoded in `main.rs` as `INVERTER_ADDRESS` (`192.168.1.36`). Running requires local network access to that device.
+# Web client
+cd client-web && npm install && npm run dev
+
+# iOS — requires XcodeGen
+cd client-ios && xcodegen generate   # generates TwoGreenSuns.xcodeproj
+open client-ios/TwoGreenSuns.xcodeproj
+
+# Android — open client-android/ in Android Studio
+```
 
 ## Architecture
 
-The project is a single Tokio async binary (`#[tokio::main]`) that loops on a 10-second interval polling the Fronius inverter REST API.
+### Server (`server/`)
 
-### Modules
+Single Tokio binary. `main.rs` initialises tracing, loads config, then runs:
+```
+tokio::join!(dispatcher_run, http_api_run, mdns_run)
+```
 
-- **`main.rs`** — Entry point. Calls `ensure_directory_configuration()`, loads config, then runs an infinite `tokio::time::interval` loop calling `inverter_task()`. The inverter IP and API URLs are hardcoded here (not yet read from config).
-- **`configuration.rs`** — `TwoGreenSunsDispatcherConfiguration` struct: holds inverter IPv4, installation name/coordinates, and electricity tariff schedule (`Vec<(NaiveTime, NaiveTime, f64)>`). Persists to `~/.twogreensuns/configurations.json`. `Preference` wraps multiple named configurations.
-- **`fronius.rs`** — Stub `InverterData` struct (generated power, house consumption, battery level) and an unimplemented `fetch_inverter_data()`. The actual fetching is currently in `main.rs::inverter_task()`.
-- **`protocol.rs`** — `TwoGreenSunsDispatcherCommand` enum: `Start`, `Level(f64)`, `Stop`. Intended as the dispatch command type sent to controlled devices (Tesla, etc.).
-- **`tesla.rs`** — Empty stub for Tesla integration.
+**Modules:**
+- `main.rs` — entry point, tracing init (`TWOGREENSUNS_LOG` env var, default DEBUG)
+- `app_state.rs` — `AppState { config, inverter_state, tesla_state, tesla, log_level_setter }`
+- `configuration.rs` — `TwoGreenSunsDispatcherConfiguration`, persists to `~/.twogreensuns/configurations.json`
+- `fronius.rs` — `fronius_fetch_data()`, parses `/solar_api/v1/GetPowerFlowRealtimeData.fcgi`
+- `dispatcher.rs` — `dispatcher_run` loop + pure `dispatcher_decide_command` (5 unit tests)
+- `http_api.rs` — Axum 0.7, all routes under `/api/v1/`
+- `mdns.rs` — raw UDP mDNS advertising `_twogreensuns._tcp.local.`
+- `ble.rs` — `TeslaInterface` trait, `MockTesla`, `BtleplugTesla` stub
+- `protocol.rs` — `TwoGreenSunsDispatcherCommand { Start, Level(f64), Stop }`
+- `tesla.rs` — UUID constants + `tesla_encode_command` stubs
 
-### Key Dependencies
+**HTTP API routes (all `/api/v1/`):**
+```
+GET  /api/v1/status
+GET  /api/v1/config
+PUT  /api/v1/config
+PUT  /api/v1/log/level          body: { "level": "debug|info|warn|error" }
+POST /api/v1/tesla/discover
+POST /api/v1/tesla/charge/start
+POST /api/v1/tesla/charge/stop
+POST /api/v1/tesla/charge/amps/:n
+```
 
-| Crate | Purpose |
-|---|---|
-| `tokio` (full) | Async runtime |
-| `reqwest` (json) | HTTP calls to Fronius Solar API |
-| `btleplug` | Bluetooth LE (cross-platform) for Tesla/device control |
-| `serde` / `serde_json` | JSON serialization for config and API responses |
-| `chrono` | Time-based tariff scheduling |
-| `uuid` | Per-configuration unique IDs |
+**Key dependencies:** `tokio`, `reqwest`, `axum 0.7`, `btleplug`, `serde/serde_json`, `chrono`, `uuid`, `tracing`, `tracing-subscriber`
 
-### Fronius Solar API Endpoints (v1)
+### Web client (`client-web/`)
 
-The inverter exposes a local REST API:
-- `/solar_api/v1/GetInverterRealtimeData.cgi` — AC power output
-- `/solar_api/v1/GetStorageRealtimeData.cgi` — Battery state
-- `/solar_api/v1/GetPowerFlowRealtimeData.fcgi` — Site-level flows: `P_PV`, `P_Akku`, `P_Grid`, `P_Load`
-- `/status/powerflow` — Alternative power flow endpoint
+Next.js 15 App Router. Call chain:
+```
+Browser → /api/v1/* (Next.js Route Handler) → TWOGREENSUNS_SERVER_URL/api/v1/* (Rust)
+```
 
-### Configuration Storage
+- `app/api/v1/[...path]/route.ts` — catch-all proxy to Rust server
+- `lib/server-api.ts` — typed fetch wrappers for Server Components (reads `TWOGREENSUNS_SERVER_URL`)
+- `lib/client-api.ts` — typed fetch wrappers for `"use client"` components (calls `/api/v1/`)
+- `lib/types.ts` — shared TypeScript types matching Rust JSON shapes
+- `app/dashboard/page.tsx` — Server Component, SSR
+- `app/tesla/page.tsx` — Server Component with `TeslaCard` client island
+- `app/settings/page.tsx` — `"use client"` form
+- `components/` — `NavBar`, `InverterCard`, `TeslaCard`
+
+Configure server URL in `client-web/.env.local`:
+```
+TWOGREENSUNS_SERVER_URL=http://twogreensuns.local:8080
+```
+
+### iOS client (`client-ios/`)
+
+SwiftUI, iOS 17+, Swift Package Manager only (no CocoaPods).
+Generate project with: `cd client-ios && xcodegen generate`
+
+- `Network/APIClient.swift` — async/await HTTP client calling `/api/v1/`
+- `Models/Models.swift` — Codable structs
+- `Models/AppViewModel.swift` — `@MainActor ObservableObject`
+- `Views/` — `DashboardView`, `TeslaView`, `SettingsView`
+
+### Android client (`client-android/`)
+
+Jetpack Compose, minSdk 26, Kotlin 2.0.
+Open in Android Studio. Server URL set via `BuildConfig.SERVER_URL` in `app/build.gradle.kts`.
+
+- `network/ApiClient.kt` — Retrofit + Moshi calling `/api/v1/`
+- `network/Models.kt` — Moshi data classes
+- `viewmodel/DashboardViewModel.kt` — single ViewModel for the app
+- `ui/screens/` — `DashboardScreen`, `SettingsScreen`
+
+## Configuration Storage
 
 Config directory: `~/.twogreensuns/`
 Config file: `~/.twogreensuns/configurations.json`
 
-The directory is created on first run by `ensure_directory_configuration()`. Config loading (`load_last_configuration`) is stubbed and returns `Default` for now.
+## Logging
+
+Env var `TWOGREENSUNS_LOG` sets level (default: `debug`).
+Runtime: `PUT /api/v1/log/level` with `{ "level": "info" }`.
+Format: `[file:fn] Enter/Exit`, `  --> step`.

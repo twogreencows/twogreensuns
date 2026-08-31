@@ -17,49 +17,53 @@ enum APIError: Error, LocalizedError {
     }
 }
 
-// NetServiceBrowser is deprecated in iOS 15+ in favour of NWBrowser,
-// but it remains the simplest API that directly yields host + port after resolution.
-final class TGSAPIClient: NSObject {
-    private var baseURL: URL
+final class TGSAPIClient {
+    private let baseURL: URL
     private let session: URLSession
     private let decoder: JSONDecoder
 
-    private var netServiceBrowser: NetServiceBrowser?
-    private var resolvingService: NetService?
+    private static let iso8601WithFractionalSeconds: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
 
-    override init() {
-        // Fallback URL used until Bonjour resolves the real address.
-        baseURL = URL(string: "http://twogreensuns.local:8080/api/v1")!
-        session = URLSession.shared
-        decoder = JSONDecoder()
-        super.init()
-        logger.debug("[TGSAPIClient:init] Starting with fallback URL: \(self.baseURL.absoluteString)")
-        startBonjourDiscovery()
-    }
+    private static let iso8601 = ISO8601DateFormatter()
 
-    // MARK: - Bonjour discovery
-
-    private func startBonjourDiscovery() {
-        logger.debug("[TGSAPIClient:startBonjourDiscovery] Browsing for _twogreensuns._tcp. on local.")
-        let browser = NetServiceBrowser()
-        browser.delegate = self
-        browser.searchForServices(ofType: "_twogreensuns._tcp.", inDomain: "local.")
-        netServiceBrowser = browser
+    init(baseURL: URL) {
+        self.baseURL = baseURL
+        self.session = URLSession.shared
+        self.decoder = JSONDecoder()
+        self.decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let string = try container.decode(String.self)
+            if let date = Self.iso8601WithFractionalSeconds.date(from: string) {
+                return date
+            }
+            if let date = Self.iso8601.date(from: string) {
+                return date
+            }
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Expected ISO 8601 date, got \(string)"
+            )
+        }
+        logger.debug("[TGSAPIClient:init] baseURL=\(baseURL.absoluteString)")
     }
 
     // MARK: - Status
 
-    func status() async throws -> StatusResponse {
-        try await get("status")
+    func runtime() async throws -> RuntimeResponse {
+        try await get("runtime")
     }
 
     // MARK: - Config
 
-    func getConfig() async throws -> AppConfig {
+    func getConfig() async throws -> TGSConfiguration {
         try await get("config")
     }
 
-    func putConfig(_ config: AppConfig) async throws {
+    func putConfig(_ config: TGSConfiguration) async throws {
         try await put("config", body: config)
     }
 
@@ -72,7 +76,7 @@ final class TGSAPIClient: NSObject {
 
     // MARK: - Tesla
 
-    func teslaDiscover() async throws {
+    /*func teslaDiscover() async throws {
         try await post("tesla/discover")
     }
 
@@ -86,13 +90,16 @@ final class TGSAPIClient: NSObject {
 
     func teslaSetAmps(_ amps: Int) async throws {
         try await post("tesla/charge/amps/\(amps)")
-    }
+    }*/
 
     // MARK: - Helpers
 
     private func get<T: Decodable>(_ path: String) async throws -> T {
         let url = baseURL.appendingPathComponent(path)
+        print("sending to \(url)")
         let (data, response) = try await session.data(from: url)
+        print("[APIClient] raw response: \(String(data: data, encoding: .utf8) ?? "<binary>")")
+        print(response)
         try validate(response)
         return try decode(data)
     }
@@ -126,46 +133,5 @@ final class TGSAPIClient: NSObject {
         } catch {
             throw APIError.decodingError(error)
         }
-    }
-}
-
-// MARK: - NetServiceBrowserDelegate
-
-extension TGSAPIClient: NetServiceBrowserDelegate {
-    func netServiceBrowser(
-        _ browser: NetServiceBrowser,
-        didFind service: NetService,
-        moreComing: Bool
-    ) {
-        logger.debug("[TGSAPIClient:didFind] Found service '\(service.name)' — resolving...")
-        browser.stop()
-        resolvingService = service
-        service.delegate = self
-        service.resolve(withTimeout: 5)
-    }
-
-    func netServiceBrowser(_ browser: NetServiceBrowser, didNotSearch errorDict: [String: NSNumber]) {
-        logger.warning("[TGSAPIClient:didNotSearch] Browse failed: \(errorDict) — keeping fallback URL")
-    }
-}
-
-// MARK: - NetServiceDelegate
-
-extension TGSAPIClient: NetServiceDelegate {
-    func netServiceDidResolveAddress(_ sender: NetService) {
-        guard let host = sender.hostName, sender.port > 0 else {
-            logger.warning("[TGSAPIClient:didResolveAddress] Resolved but host/port invalid — keeping fallback URL")
-            return
-        }
-        if let url = URL(string: "http://\(host):\(sender.port)/api/v1") {
-            baseURL = url
-            logger.info("[TGSAPIClient:didResolveAddress] Server URL updated to \(url.absoluteString)")
-        }
-        resolvingService = nil
-    }
-
-    func netService(_ sender: NetService, didNotResolve errorDict: [String: NSNumber]) {
-        logger.warning("[TGSAPIClient:didNotResolve] Resolution failed: \(errorDict) — keeping fallback URL")
-        resolvingService = nil
     }
 }
