@@ -22,6 +22,7 @@ struct InverterData: Codable {
     let pPv: Double
     let pLoad: Double
     let pGrid: Double
+    let batterySoc:Double
     
     let timestamp: Date
 
@@ -30,6 +31,7 @@ struct InverterData: Codable {
         case pLoad = "p_load"
         case pGrid = "p_grid"
         case pAkku = "p_akku"
+        case batterySoc = "battery_soc"
         case timestamp = "timestamp"
         case  acVoltage = "ac_voltage"
     }

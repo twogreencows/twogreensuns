@@ -68,10 +68,12 @@ private struct InverterCard: View {
                     Image("inverter_fronius_gen24")
                         .frame(maxWidth: .infinity, alignment: .center)
                     Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-                        PowerRow(label: "Solar (PV)", value: data.pPv, color: .yellow)
-                        PowerRow(label: "House load", value: data.pLoad, color: .blue)
-                        PowerRow(label: "Grid", value: data.pGrid, color: .orange)
-                        PowerRow(label: "Battery", value: data.pAkku, color: .green)
+                        PowerRow(label: "Solar (PV)", value: data.pPv, color: .yellow, unit:"W")
+                        PowerRow(label: "House load", value: data.pLoad, color: .blue, unit:"W")
+                        PowerRow(label: "Grid", value: data.pGrid, color: .orange, unit:"W")
+                        PowerRow(label: "Battery", value: data.pAkku, color: .green , unit:"W")
+                        PowerRow(label: "Battery SOC", value: data.batterySoc, color: .green, unit:"%")
+                        PowerRow(label: "Voltage", value: data.acVoltage, color: .red, unit:"V")
                     }
                 }
             } else {
@@ -98,13 +100,14 @@ private struct PowerRow: View {
     let label: String
     let value: Double
     let color: Color
+    let unit: String
 
     var body: some View {
         GridRow {
             Circle().fill(color).frame(width: 8, height: 8)
             Text(label).foregroundStyle(.secondary)
             Spacer()
-            Text(String(format: "%.0f W", value)).monospacedDigit().bold()
+            Text("\(value, specifier: "%.0f") \(unit)").monospacedDigit().bold()
         }
     }
 }
