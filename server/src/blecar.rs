@@ -2,7 +2,7 @@
 // These are stubs — actual values depend on the Tesla BLE protocol.
 use sha1::Sha1;
 use sha1::Digest;
-
+use btleplug::api::Characteristic;
 use serde::{Deserialize, Serialize};
 
 pub const BLETESLA_VEHICLESERVICE_UUID: &str = "00000211-b2d1-43f0-9b88-960cebf8b91e";
@@ -52,6 +52,10 @@ pub struct TGSBleCar {
  pub client_public_key:Vec<u8>,
  pub client_private_key:Vec<u8>,
  pub from_destination_address:[u8; 16],
+
+ pub bluetoothTX:Option<Characteristic>,
+ pub bluetoothRX:Option<Characteristic>,
+ pub bluetoothRssi: f32,
 
  pub state:TGSTeslaState,
 }

@@ -153,6 +153,7 @@ impl TGSBLEDiscoverer {
                                 if advertising_name == expected_name {
                                     if self.car.is_none() {
                                         let vin = state.runtime.read().await.config.tesla_vin.clone();
+                                        println!("WE FOUND HE TSLA");
                                         self.car = Some(TGSBleCar {
                                             vin: vin.unwrap(),  
                                             bluetooth_advertising_name: advertising_name.clone(),
@@ -160,10 +161,19 @@ impl TGSBLEDiscoverer {
                                             display_name:"Car".to_string(),
                                             client_private_key:self.client_private_key.clone(),
                                             from_destination_address:self.from_destination_address.clone(),
-
+                                            bluetoothTX:None,
+                                            bluetoothRX:None,
+                                            bluetoothRssi:0.0,
                                             state:TGSTeslaState::default(),
                                         });
-                                        println!("WE FOUND HE TSLA");
+
+                                        peripheral.connect().await.ok();
+                                        peripheral.discover_services().await.ok();
+                                        let characteristics = peripheral.characteristics();
+
+
+
+
                                     }
                                 }
                             }

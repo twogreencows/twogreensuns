@@ -15,6 +15,7 @@ pub struct TGSInverterDataEntry {
     pub p_load: f64,
     pub p_grid: f64,
     pub p_akku: f64,
+    pub battery_soc: f64,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -83,6 +84,7 @@ pub async fn fronius_fetch_data( client: &reqwest::Client, base_url: &str) -> Re
     let p_load = site["P_Load"].as_f64().unwrap_or(0.0);
     let p_grid = site["P_Grid"].as_f64().unwrap_or(0.0);
     let p_akku = site["P_Akku"].as_f64().unwrap_or(0.0);
+    let battery_soc = inverter["SOC"].as_f64().unwrap_or(0.0);
 
     debug!("  --> parsed: AC_VOLTAGE = {:.00} P_PV={:.0} P_Load={:.0} P_Grid={:.0} P_Akku={:.0}", ac_voltage, p_pv, p_load, p_grid, p_akku);
 
@@ -90,5 +92,5 @@ pub async fn fronius_fetch_data( client: &reqwest::Client, base_url: &str) -> Re
         error!("[fronius:fronius_fetch_data] All values zero — inverter may be unreachable or off");
     }
 
-    Ok(TGSInverterDataEntry{ ac_voltage, p_pv, p_load, p_grid, p_akku, timestamp: Utc::now() })
+    Ok(TGSInverterDataEntry{ ac_voltage, p_pv, p_load, p_grid, p_akku, battery_soc, timestamp: Utc::now() })
 }
