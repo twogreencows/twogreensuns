@@ -1,4 +1,5 @@
-use tracing::info;
+use std::fmt;
+use tracing_subscriber::filter::LevelFilter;
 use uuid::Uuid;
 use crate::configuration::TGSDispatcherConfiguration;
 use crate::blecar::TGSTeslaCarCommand;
@@ -22,7 +23,8 @@ pub struct TGSRuntimeDataEntry{
 #[derive(Debug, Clone, PartialEq)]
 pub enum TGSPlatform {
     MacOS,
-    LinuxRaspberry,
+    Linux,
+    Windows,
 }
 
 impl TGSPlatform {
@@ -31,17 +33,25 @@ impl TGSPlatform {
         {
             TGSPlatform::MacOS
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
         {
-            TGSPlatform::LinuxRaspberry
+            TGSPlatform::Windows
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
+            TGSPlatform::Linux
         }
     }
+}
 
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            TGSPlatform::MacOS => "macOS",
-            TGSPlatform::LinuxRaspberry => "Linux/Raspberry Pi",
-        }
+impl fmt::Display for TGSPlatform {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            TGSPlatform::MacOS => "twogreensuns.platform.macos",
+            TGSPlatform::Linux => "twogreensuns.platform.linux",
+            TGSPlatform::Windows => "twogreensuns.platform.windows",
+        };
+        write!(f, "{}", s)
     }
 }
 
@@ -58,29 +68,36 @@ impl TGSPlatform {
 ///                                       otherwise the machine hostname
 /// * `tgsbox_server_httport`           — TCP port the HTTP API listens on
 /// * `tgsbox_platform`                 — detected at compile time
+/// * `tgsbox_log_level`                — from `TWOGREENSUNS_LOG`, defaults to INFO
 pub struct TGSDispatcherRuntime {
     pub config: TGSDispatcherConfiguration,
     pub tgsdevice_inverter_ipv4_address: String,
+    //this is not point this should be data entry
     pub tgsdevice_inverter_points: Vec<TGSInverterDataEntry>,
 
     pub tgsbox_server_hostname: String,
     pub tgsbox_server_httport: u16,
     pub tgsbox_platform: TGSPlatform,
+    pub tgsbox_log_level: LevelFilter,
 }
 
 impl TGSDispatcherRuntime {
-    pub fn new(
-        config: TGSDispatcherConfiguration,
-        inverter_ipv4_address: String,
-    ) -> Self {
+    /// Reads `TWOGREENSUNS_LOG`, defaulting to `INFO` when unset or unparsable.
+    pub fn detect_log_level() -> LevelFilter {
+        std::env::var("TWOGREENSUNS_LOG")
+            .ok()
+            .and_then(|v| v.parse::<LevelFilter>().ok())
+            .unwrap_or(LevelFilter::DEBUG)
+    }
+
+    pub fn new( config: TGSDispatcherConfiguration, inverter_ipv4_address: String) -> Self {
         let platform = TGSPlatform::detect();
+        let log_level = Self::detect_log_level();
         let hostname = if config.installation_display_name.is_empty() {
             mdns_get_hostname()
         } else {
             config.installation_display_name.clone()
         };
-        info!( "[runtime:new] platform={} hostname={} inverter={} http_port=8080",
-            platform.as_str(), hostname, inverter_ipv4_address);
         TGSDispatcherRuntime {
             config,
             tgsdevice_inverter_ipv4_address: inverter_ipv4_address,
@@ -88,6 +105,7 @@ impl TGSDispatcherRuntime {
             tgsbox_server_hostname: hostname,
             tgsbox_server_httport: 8080,
             tgsbox_platform: platform,
+            tgsbox_log_level: log_level,
         }
     }
 }

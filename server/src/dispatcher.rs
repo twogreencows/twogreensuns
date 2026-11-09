@@ -2,13 +2,14 @@ use std::sync::Arc;
 
 use chrono::{Local, NaiveTime, Utc};
 use reqwest::Client;
+use tokio::sync::oneshot;
 use tokio::time::{sleep, Duration};
 use tracing::{debug, error, info};
 
 use crate::application::TGSApplication;
+use crate::blecar::{TGSTeslaCarCommand, TGSTeslaState, TGSBleCarRequest};
 use crate::configuration::TGSDispatcherConfiguration;
 use crate::fronius::{fronius_fetch_data, TGSInverterDataEntry};
-use crate::protocol::TwoGreenSunsDispatcherCommand;
 
 pub async fn dispatcher_run(state: Arc<TGSApplication>) {
     debug!("[dispatcher:dispatcher_run] Starting dispatcher");
@@ -32,7 +33,13 @@ pub async fn dispatcher_run(state: Arc<TGSApplication>) {
             (base_url, interval_seconds)
         };
 
-        match fronius_fetch_data(&client, &base_url).await {
+        // Fetch the current car state and the inverter data in parallel.
+        let (tesla, fronius) = tokio::join!(
+            request_tesla(&state, TGSBleCarRequest::ReadState),
+            fronius_fetch_data(&client, &base_url),
+        );
+
+        match fronius {
             Ok(data) => {
                 info!(
                     " --> [{}] Polling inverter with result AC_VOLTAGE={} P_PV={:.0}W P_Load={:.0}W P_Grid={:.0}W P_Akku={:.0}W",
@@ -40,18 +47,23 @@ pub async fn dispatcher_run(state: Arc<TGSApplication>) {
                 );
 
                 let now = Utc::now().time();
-                let cmd = {
+                let actions = {
                     let runtime = state.runtime.read().await;
-                    dispatcher_decide_command(&data, &runtime.config, now)
+                    dispatcher_decide_actions(&data, tesla.as_ref(), &runtime.config, now)
                 };
 
                 debug!("  --> updating inverter state");
                 *state.inverter_state.write().await = Some(data);
 
-                debug!("  --> sending command to Tesla");
-
-                debug!("  --> refreshing Tesla state");
-                //*state.tesla_state.write().await = tesla.status().await;
+                if actions.is_empty() {
+                    debug!("  --> no Tesla action required");
+                } else {
+                    for action in actions {
+                        debug!("  --> sending Tesla command {:?}", action);
+                        // The BLE task mirrors `tesla_state` on every request.
+                        let _ = request_tesla(&state, TGSBleCarRequest::Action(action)).await;
+                    }
+                }
             }
             Err(e) => error!("[dispatcher:dispatcher_run] Inverter fetch error: {}", e),
         }
@@ -61,26 +73,63 @@ pub async fn dispatcher_run(state: Arc<TGSApplication>) {
     }
 }
 
-pub fn dispatcher_decide_command( data: &TGSInverterDataEntry, cfg: &TGSDispatcherConfiguration, _now: NaiveTime) -> TwoGreenSunsDispatcherCommand {
-    debug!("[dispatcher:dispatcher_decide_command] Enter");
-    let max_amps = cfg.tesla_max_charging_amps as f64;
+/// Send a request to the BLE task and wait for the resulting Tesla state.
+/// Returns `None` when the BLE task is unavailable (e.g. no VIN configured) or
+/// the request failed — the caller treats that as "no car".
+async fn request_tesla(state: &Arc<TGSApplication>, req: TGSBleCarRequest) -> Option<TGSTeslaState> {
+    let (reply_tx, reply_rx) = oneshot::channel();
+    if state.blecar_commandchannel_tx.send((req, reply_tx)).await.is_err() {
+        debug!("[dispatcher:request_tesla] BLE task unavailable");
+        return None;
+    }
+    match reply_rx.await {
+        Ok(Ok(tesla_state)) => Some(tesla_state),
+        Ok(Err(e)) => {
+            debug!("[dispatcher:request_tesla] Tesla request failed: {}", e);
+            None
+        }
+        Err(_) => {
+            debug!("[dispatcher:request_tesla] BLE task dropped the reply");
+            None
+        }
+    }
+}
 
-    let cmd = if data.p_pv > 0.0 {
+/// Decide which charging commands (if any) to send to the car this cycle.
+///
+/// `tesla` is the freshly-read car state, or `None` when the car is unreachable.
+pub fn dispatcher_decide_actions(
+    data: &TGSInverterDataEntry,
+    tesla: Option<&TGSTeslaState>,
+    cfg: &TGSDispatcherConfiguration,
+    _now: NaiveTime,
+) -> Vec<TGSTeslaCarCommand> {
+    debug!("[dispatcher:dispatcher_decide_actions] Enter");
+    let max_amps = cfg.tesla_max_charging_amps as f64;
+    let charging_now = tesla.map(|t| t.charging).unwrap_or(false);
+
+    let mut actions = Vec::new();
+
+    if data.p_pv > 0.0 {
         let excess_watts = data.p_pv - data.p_load.abs();
         let target_amps = (excess_watts / data.ac_voltage).clamp(0.0, max_amps);
-
         debug!("  --> solar active: excess={:.0}W target={:.2}A max={:.0}A", excess_watts, target_amps, max_amps);
-        if target_amps > 0.0 {
-            TwoGreenSunsDispatcherCommand::Level(target_amps)
-        } else {
-            TwoGreenSunsDispatcherCommand::Stop
-        }
-    } else {
-        TwoGreenSunsDispatcherCommand::Stop
-    };
 
-    debug!("[dispatcher:dispatcher_decide_command] Exit");
-    cmd
+        if target_amps >= 1.0 {
+            actions.push(TGSTeslaCarCommand::SetChargingAmps(target_amps as u8));
+            if !charging_now {
+                actions.push(TGSTeslaCarCommand::StartCharging);
+            }
+            debug!("[dispatcher:dispatcher_decide_actions] Exit");
+            return actions;
+        }
+    }
+
+    if charging_now {
+        actions.push(TGSTeslaCarCommand::StopCharging);
+    }
+    debug!("[dispatcher:dispatcher_decide_actions] Exit");
+    actions
 }
 
 #[cfg(test)]
@@ -95,59 +144,77 @@ mod tests {
         }
     }
 
-    fn make_data(p_pv: f64, p_load: f64) -> InverterData {
-        InverterData {
+    fn make_data(p_pv: f64, p_load: f64) -> TGSInverterDataEntry {
+        TGSInverterDataEntry {
+            ac_voltage: 230.0,
             p_pv,
             p_load,
             p_grid: 0.0,
             p_akku: 0.0,
+            battery_soc: 0.0,
             timestamp: Utc::now(),
         }
     }
 
-    #[test]
-    fn test_solar_excess_charges() {
-        let cfg = make_cfg(16);
-        let data = make_data(3000.0, 500.0); // 2500W excess → ~10.87A
-        let now = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
-        let cmd = dispatcher_decide_command(&data, &cfg, now);
-        match cmd {
-            TwoGreenSunsDispatcherCommand::Level(amps) => {
-                assert!((amps - (2500.0 / 230.0)).abs() < 0.01, "Unexpected amps: {}", amps);
-            }
-            _ => panic!("Expected Level command"),
-        }
+    fn tesla(charging: bool) -> TGSTeslaState {
+        TGSTeslaState { charging, ..Default::default() }
+    }
+
+    fn noon() -> NaiveTime {
+        NaiveTime::from_hms_opt(12, 0, 0).unwrap()
     }
 
     #[test]
-    fn test_no_solar_stops() {
+    fn solar_excess_sets_amps_and_starts_when_idle() {
+        let cfg = make_cfg(16);
+        let data = make_data(3000.0, 500.0); // 2500W / 230V ≈ 10.8A
+        let actions = dispatcher_decide_actions(&data, Some(&tesla(false)), &cfg, noon());
+        assert_eq!(
+            actions,
+            vec![
+                TGSTeslaCarCommand::SetChargingAmps(10),
+                TGSTeslaCarCommand::StartCharging,
+            ]
+        );
+    }
+
+    #[test]
+    fn solar_excess_only_sets_amps_when_already_charging() {
+        let cfg = make_cfg(16);
+        let data = make_data(3000.0, 500.0);
+        let actions = dispatcher_decide_actions(&data, Some(&tesla(true)), &cfg, noon());
+        assert_eq!(actions, vec![TGSTeslaCarCommand::SetChargingAmps(10)]);
+    }
+
+    #[test]
+    fn no_solar_stops_when_charging() {
         let cfg = make_cfg(16);
         let data = make_data(0.0, 500.0);
-        let now = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
-        let cmd = dispatcher_decide_command(&data, &cfg, now);
-        assert!(matches!(cmd, TwoGreenSunsDispatcherCommand::Stop));
+        let actions = dispatcher_decide_actions(&data, Some(&tesla(true)), &cfg, noon());
+        assert_eq!(actions, vec![TGSTeslaCarCommand::StopCharging]);
     }
 
     #[test]
-    fn test_solar_less_than_load_stops() {
+    fn no_solar_does_nothing_when_idle() {
         let cfg = make_cfg(16);
-        let data = make_data(100.0, 500.0); // excess = -400W → clamped to 0 → Stop
-        let now = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
-        let cmd = dispatcher_decide_command(&data, &cfg, now);
-        assert!(matches!(cmd, TwoGreenSunsDispatcherCommand::Stop));
+        let data = make_data(0.0, 500.0);
+        let actions = dispatcher_decide_actions(&data, Some(&tesla(false)), &cfg, noon());
+        assert!(actions.is_empty());
     }
 
     #[test]
-    fn test_solar_clamped_to_max_amps() {
+    fn solar_less_than_load_stops() {
+        let cfg = make_cfg(16);
+        let data = make_data(100.0, 500.0); // excess negative → clamped to 0
+        let actions = dispatcher_decide_actions(&data, Some(&tesla(true)), &cfg, noon());
+        assert_eq!(actions, vec![TGSTeslaCarCommand::StopCharging]);
+    }
+
+    #[test]
+    fn solar_clamped_to_max_amps() {
         let cfg = make_cfg(8);
         let data = make_data(10000.0, 500.0); // huge excess → capped at 8A
-        let now = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
-        let cmd = dispatcher_decide_command(&data, &cfg, now);
-        match cmd {
-            TwoGreenSunsDispatcherCommand::Level(amps) => {
-                assert!((amps - 8.0).abs() < 0.01, "Expected 8A, got {}", amps);
-            }
-            _ => panic!("Expected Level command"),
-        }
+        let actions = dispatcher_decide_actions(&data, Some(&tesla(true)), &cfg, noon());
+        assert_eq!(actions, vec![TGSTeslaCarCommand::SetChargingAmps(8)]);
     }
 }

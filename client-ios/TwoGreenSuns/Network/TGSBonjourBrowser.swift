@@ -12,6 +12,16 @@ final class TGSBonjourBrowser {
     private var resolved: Set<TGSDiscoveredService> = []
     private let queue = DispatchQueue(label: "com.twogreensuns.bonjourbrowser")
 
+    /// TCP parameters pinned to IPv4 — the simulator otherwise resolves to a link-local
+    /// IPv6 endpoint we can't easily connect to.
+    private static let tcpIPv4: NWParameters = {
+        let params = NWParameters.tcp
+        if let ip = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
+            ip.version = .v4
+        }
+        return params
+    }()
+
     var onServicesChanged: ((Set<TGSDiscoveredService>) -> Void)?
 
     func start() {
@@ -65,7 +75,7 @@ final class TGSBonjourBrowser {
         logger.debug("[TGSBonjourBrowser:resolve] Found '\(name)' — resolving...")
         print(result)
         print(result.endpoint)
-        let connection = NWConnection(to: result.endpoint, using: .tcp)
+        let connection = NWConnection(to: result.endpoint, using: Self.tcpIPv4)
         resolvingConnections[name] = connection
 
         connection.stateUpdateHandler = { [weak self] state in
@@ -98,16 +108,21 @@ final class TGSBonjourBrowser {
             return
         }
 
-        let ip = ipv4Address(from: host)
+        guard case let .ipv4(v4) = host else {
+            logger.warning("[TGSBonjourBrowser:resolve] '\(name)' resolved to a non-IPv4 address — skipping")
+            cleanup(name)
+            return
+        }
+
+        let raw = "\(v4)"
+        let ip = raw.split(separator: "%").first.map(String.init) ?? raw
         let hostString = hostString(from: host)
-        
-        
 
         let service = TGSDiscoveredService(
             name: name,
             host: hostString,
             port: Int(port.rawValue),
-            ipAddress: ip.split(separator: "%").first.map(String.init) ?? ip
+            ipAddress: ip
         )
 
         logger.info("[TGSBonjourBrowser:resolve] '\(service.name)' → \(service.baseURL) (\(ip))")
@@ -132,13 +147,6 @@ final class TGSBonjourBrowser {
         case .ipv6(let addr): return "\(addr)"
         @unknown default: return ""
         }
-    }
-
-    private func ipv4Address(from host: NWEndpoint.Host) -> String {
-        if case let .ipv4(addr) = host {
-            return "\(addr)"
-        }
-        return ""
     }
 
     private func cleanup(_ name: String) {

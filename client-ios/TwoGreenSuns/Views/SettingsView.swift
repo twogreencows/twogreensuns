@@ -2,22 +2,95 @@
 
 import SwiftUI
 import MapKit
+import CoreLocation
 
 struct SettingsView: View {
     @EnvironmentObject var viewModel: TGSInstallationEnvironment
     @State private var config: TGSConfiguration?
+    @State private var backupConfig: TGSConfiguration?
     @State private var isLoading = true
     @State private var isEditing = false
-    
+    @State private var showErrorAlert = false
+    @State private var addressQuery = ""
+    @State private var isGeocoding = false
+    @State private var geocodeError: String?
+
     var body: some View {
-        NavigationStack {
-            content
-                .navigationTitle("Configuration")
-                .task {
-                    await viewModel.loadConfig()
-                    config = viewModel.config
-                    isLoading = false
-                }
+        content
+            .navigationTitle("Configuration")
+            .task {
+                await viewModel.loadConfig()
+                config = viewModel.config
+                isLoading = false
+            }
+            .alert("Couldn't save configuration",
+                   isPresented: $showErrorAlert,
+                   presenting: viewModel.errorMessage) { _ in
+                Button("OK", role: .cancel) { }
+            } message: { message in
+                Text(message)
+            }
+    }
+
+    // MARK: - Edit lifecycle
+
+    private func beginEditing() {
+        backupConfig = config
+        isEditing = true
+        Task { await prefillAddressFromConfig() }
+    }
+
+    private func cancelEditing() {
+        config = backupConfig
+        backupConfig = nil
+        isEditing = false
+        addressQuery = ""
+        geocodeError = nil
+    }
+
+    private func commitEditing() {
+        guard let config else { return }
+        viewModel.errorMessage = nil
+        Task {
+            await viewModel.saveConfig(config)
+            if viewModel.errorMessage != nil {
+                showErrorAlert = true
+            } else {
+                backupConfig = nil
+                isEditing = false
+                addressQuery = ""
+                geocodeError = nil
+            }
+        }
+    }
+
+    // MARK: - Geocoding
+
+    private func geocodeAddress() async {
+        let query = addressQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+        isGeocoding = true
+        geocodeError = nil
+        defer { isGeocoding = false }
+        do {
+            guard let coordinate = try await CLGeocoder().geocodeAddressString(query).first?.location?.coordinate else {
+                geocodeError = "No match for that address"
+                return
+            }
+            config?.installationLatitude = coordinate.latitude
+            config?.installationLongitude = coordinate.longitude
+        } catch {
+            geocodeError = "Couldn't look up that address"
+        }
+    }
+
+    private func prefillAddressFromConfig() async {
+        guard let config, config.installationLatitude != 0 || config.installationLongitude != 0 else { return }
+        let location = CLLocation(latitude: config.installationLatitude, longitude: config.installationLongitude)
+        if let placemark = try? await CLGeocoder().reverseGeocodeLocation(location).first {
+            addressQuery = [placemark.name, placemark.locality, placemark.postalCode, placemark.country]
+                .compactMap { $0 }
+                .joined(separator: ", ")
         }
     }
 
@@ -27,11 +100,12 @@ struct SettingsView: View {
             ProgressView("Loading config…")
         } else if config != nil {
             Form {
+                if isEditing { nameSection }
                 locationSection
                 costSection
                 inverterSection
                 teslaSection
-                saveSection
+                editSection
             }
         } else {
             Text("Couldn't load config")
@@ -39,19 +113,83 @@ struct SettingsView: View {
         }
     }
     @ViewBuilder
+    private var nameSection: some View {
+        Section("Installation") {
+            TextField("Display name", text: Binding(
+                get: { config?.installationDisplayName ?? "" },
+                set: { config?.installationDisplayName = $0 }
+            ))
+        }
+    }
+
+    @ViewBuilder
+    private var editSection: some View {
+        Section {
+            if isEditing {
+                Button {
+                    commitEditing()
+                } label: {
+                    Text("Save").frame(maxWidth: .infinity, alignment: .center)
+                }
+                Button(role: .cancel) {
+                    cancelEditing()
+                } label: {
+                    Text("Cancel").frame(maxWidth: .infinity, alignment: .center)
+                }
+                .foregroundStyle(.red)
+            } else {
+                Button {
+                    beginEditing()
+                } label: {
+                    Text("Edit").frame(maxWidth: .infinity, alignment: .center)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
     private var locationSection: some View {
         Section("Location") {
-            Map(initialPosition: .region(
-                MKCoordinateRegion(
-                    center: CLLocationCoordinate2D(latitude: config?.installationLatitude ?? 0.0, longitude: config?.installationLongitude ?? 0.0),
-                            span: MKCoordinateSpan(latitudeDelta: 0.002, longitudeDelta: 0.002)
-                        )
-                    )) {
-                        Marker("Location", coordinate: CLLocationCoordinate2D(latitude: config?.installationLatitude ?? 0.0, longitude: config?.installationLongitude ?? 0.0))
+            if isEditing {
+                TextField("Street, city, country", text: $addressQuery)
+                    .textContentType(.fullStreetAddress)
+                    .submitLabel(.search)
+                    .onSubmit { Task { await geocodeAddress() } }
+
+                Button {
+                    Task { await geocodeAddress() }
+                } label: {
+                    HStack {
+                        Text("Find coordinates")
+                        Spacer()
+                        if isGeocoding { ProgressView() }
                     }
-                    .disabled(true) // makes it non-interactive (no pan/zoom/rotate)
-                    .frame(height: 200)               // <- give it real height
-                    .listRowInsets(EdgeInsets())
+                }
+                .disabled(addressQuery.trimmingCharacters(in: .whitespaces).isEmpty || isGeocoding)
+
+                if let geocodeError {
+                    Text(geocodeError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                } else if let config {
+                    LabeledContent("Latitude",
+                                   value: config.installationLatitude.formatted(.number.precision(.fractionLength(5))))
+                    LabeledContent("Longitude",
+                                   value: config.installationLongitude.formatted(.number.precision(.fractionLength(5))))
+                }
+            } else {
+                Map(initialPosition: .region(
+                    MKCoordinateRegion(
+                        center: CLLocationCoordinate2D(latitude: config?.installationLatitude ?? 0.0, longitude: config?.installationLongitude ?? 0.0),
+                                span: MKCoordinateSpan(latitudeDelta: 0.002, longitudeDelta: 0.002)
+                            )
+                        )) {
+                            Marker("Location", coordinate: CLLocationCoordinate2D(latitude: config?.installationLatitude ?? 0.0, longitude: config?.installationLongitude ?? 0.0))
+                        }
+                        .disabled(true) // makes it non-interactive (no pan/zoom/rotate)
+                        .frame(maxWidth: .infinity, minHeight: 200, maxHeight: 200)
+                        .listRowInsets(EdgeInsets())
+            }
         }
     }
     
@@ -240,19 +378,4 @@ struct SettingsView: View {
         }
     }
 
-    @ViewBuilder
-    private var saveSection: some View {
-        Section {
-            Button {
-                if isEditing {
-                    guard let config else { return }
-                    Task { await viewModel.saveConfig(config) }
-                }
-                isEditing.toggle()
-            } label: {
-                Text(isEditing ? "Save" : "Edit")
-                    .frame(maxWidth: .infinity, alignment: .center)
-            }
-        }
-    }
 }

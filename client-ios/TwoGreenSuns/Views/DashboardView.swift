@@ -6,53 +6,51 @@ struct DashboardView: View {
     private let refreshInterval: Duration = .seconds(10)
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                if let runtime = viewModel.runtime {
-                    VStack(spacing: 16) {
-                        if let inverter = runtime.inverter {
-                            InverterCard(data: inverter)
-                        } else {
-                            Image("inverter_fronius_gen24")
-                            ContentUnavailableView(
-                                "No inverter data",
-                                systemImage: "exclamationmark.triangle",
-                                description: Text("Waiting for the first poll cycle.")
-                            )
-                        }
+        ScrollView {
+            if let runtime = viewModel.runtime {
+                VStack(spacing: 16) {
+                    if let inverter = runtime.inverter {
+                        InverterCard(data: inverter)
+                    } else {
+                        Image("inverter_fronius_gen24")
+                        ContentUnavailableView(
+                            "No inverter data",
+                            systemImage: "exclamationmark.triangle",
+                            description: Text("Waiting for the first poll cycle.")
+                        )
+                    }
 
-                        if let tesla = runtime.tesla {
-                            TeslaStatusCard(state: tesla)
-                        }
-                    }
-                    .padding()
-                } else if viewModel.isLoading {
-                    ProgressView("Loading…")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    ContentUnavailableView(
-                        "Unable to connect",
-                        systemImage: "wifi.slash",
-                        description: Text(viewModel.errorMessage ?? "Check server connection.")
-                    )
-                }
-            }
-            .navigationTitle("Dashboard")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { Task { await viewModel.refreshRuntime() } } label: {
-                        Image(systemName: "arrow.clockwise")
+                    if let tesla = runtime.tesla {
+                        TeslaStatusCard(state: tesla)
                     }
                 }
+                .padding()
+            } else if viewModel.isLoading {
+                ProgressView("Loading…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ContentUnavailableView(
+                    "Unable to connect",
+                    systemImage: "wifi.slash",
+                    description: Text(viewModel.errorMessage ?? "Check server connection.")
+                )
             }
-            .refreshable { await viewModel.refreshRuntime() }
-            .task {
+        }
+        .navigationTitle("Dashboard")
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button { Task { await viewModel.refreshRuntime() } } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+        }
+        .refreshable { await viewModel.refreshRuntime() }
+        .task {
+            await viewModel.refreshRuntime()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: refreshInterval)
+                guard !Task.isCancelled else { return }
                 await viewModel.refreshRuntime()
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: refreshInterval)
-                    guard !Task.isCancelled else { return }
-                    await viewModel.refreshRuntime()
-                }
             }
         }
     }

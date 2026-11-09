@@ -5,15 +5,14 @@ struct TeslaView: View {
     @State private var targetAmps: Double = 8
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("Discovery") {
-                    Button("Discover Tesla via BLE") {
-                        //Task { await viewModel.teslaDiscover() }
-                    }
+        Form {
+            Section("Discovery") {
+                Button("Discover Tesla via BLE") {
+                    //Task { await viewModel.teslaDiscover() }
                 }
+            }
 
-                Section("Charging") {
+            Section("Charging") {
 //                    Button("Start charging") {
 //                        //Task { await viewModel.teslaStartCharging() }
 //                    }
@@ -32,17 +31,16 @@ struct TeslaView: View {
 //                        }
 //                        .buttonStyle(.bordered)
 //                    }
-                }
+            }
 
-                if let tesla = viewModel.runtime?.tesla {
-                    Section("Current state") {
-                        LabeledContent("Connected", value: tesla.connected ? "Yes" : "No")
-                        LabeledContent("Charging", value: tesla.charging ? "Yes" : "No")
-                        LabeledContent("Charging amps", value: "\(tesla.chargingAmps) A")
-                    }
+            if let tesla = viewModel.runtime?.tesla {
+                Section("Current state") {
+                    LabeledContent("Connected", value: tesla.connected ? "Yes" : "No")
+                    LabeledContent("Charging", value: tesla.charging ? "Yes" : "No")
+                    LabeledContent("Charging amps", value: "\(tesla.chargingAmps) A")
                 }
             }
-            .navigationTitle("Tesla")
         }
+        .navigationTitle("Tesla")
     }
 }

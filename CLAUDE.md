@@ -115,3 +115,7 @@ Config file: `~/.twogreensuns/configurations.json`
 Env var `TWOGREENSUNS_LOG` sets level (default: `debug`).
 Runtime: `PUT /api/v1/log/level` with `{ "level": "info" }`.
 Format: `[file:fn] Enter/Exit`, `  --> step`.
+
+## Working Agreement
+
+- **Never write or edit code without explicit approval first** — propose the change (describe it or show a diff) and wait for the user to review it before writing or editing any file. This applies even for small, obvious, or previously-discussed changes; approval for one step is never approval for the next one.

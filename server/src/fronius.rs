@@ -25,7 +25,7 @@ pub struct TGSInverterDataEntry {
 pub async fn fronius_discover_address() -> Option<String> {
     use tracing::{debug, info};
     //debug!("[fronius:fronius_discover_address] Enter");
-    let addr = crate::mdns::mdns_discover_service_address("_Fronius-SE-Inverter._tcp", 5).await;
+    let addr = crate::mdns::mdns_discover_address_for_service("_Fronius-SE-Inverter._tcp", 5).await;
     match &addr {
         Some(a) => info!("[fronius:fronius_discover_address] Inverter found at {}", a),
         None => debug!("[fronius:fronius_discover_address] Inverter not found via mDNS"),
@@ -70,10 +70,10 @@ pub async fn fronius_fetch_data( client: &reqwest::Client, base_url: &str) -> Re
         async { client.get(&url_power).send().await?.json::<serde_json::Value>().await }
     );
     let data_meter = result_meter?;
-    println!("data_meter is {:#?}", data_meter);
+    //println!("data_meter is {:#?}", data_meter);
 
     let data_power = result_power?;
-    println!("data_power is {:#?}", data_power);
+    //println!("data_power is {:#?}", data_power);
 
     let inverter = &data_power["Body"]["Data"]["Inverters"]["1"];
     let site = &data_power["Body"]["Data"]["Site"];

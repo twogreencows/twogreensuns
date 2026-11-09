@@ -1,3 +1,41 @@
+// ---------------------------------------------------------------------------
+// TODO(refactor): separate concerns between Preferences and Configuration.
+//
+// Today `TGSDispatcherConfiguration` owns filesystem paths, directory creation,
+// and multi-config persistence — none of which are its job. `save()` and
+// `load_last_configuration()` are also asymmetric in spirit (one config in,
+// a whole wrapper file out).
+//
+// Proposed split:
+//
+// TGSDispatcherPreferences  — owns the file + the collection
+//   - config_dir() / config_file_path()   path helpers
+//   - ensure_directory()                  (was ensure_directory_configuration)
+//   - load() -> Self                      read + parse file; empty on any failure
+//   - save(&self)                         serialize the whole wrapper
+//   - active(&self) -> TGSDispatcherConfiguration
+//                                         resolve active_configuration -> clone,
+//                                         or default
+//   - upsert(&mut self, cfg)              replace-by-uuid or push, then set
+//                                         active_configuration
+//   - impl Default
+//
+// TGSDispatcherConfiguration — just the data + its own defaults
+//   - fields + impl Default only; no `env`, no `std::fs`
+//
+// Call sites:
+//   - main.rs: TGSDispatcherPreferences::ensure_directory();
+//              let prefs = TGSDispatcherPreferences::load();
+//              let config = prefs.active();
+//   - http_api.rs handle_put_config: load prefs, prefs.upsert(updated),
+//              prefs.save(), then set runtime.config.
+//
+// Open question: does `runtime` hold just the active TGSDispatcherConfiguration
+// (simpler, current shape) or the full TGSDispatcherPreferences (needed to
+// switch/list configs over the API)? Leaning: keep the active config in runtime
+// for now and let http_api reload prefs on write.
+// ---------------------------------------------------------------------------
+
 use std::env;
 use chrono::NaiveTime;
 use serde::{Deserialize, Serialize};
@@ -84,7 +122,40 @@ impl TGSDispatcherConfiguration {
             .join(".twogreensuns/configurations.json");
 
         debug!("  --> saving to {:?}", config_file_path);
-        match serde_json::to_string_pretty(self) {
+
+        // Load existing preferences (or start fresh), then upsert this configuration.
+        let mut preferences = match std::fs::read_to_string(&config_file_path) {
+            Ok(contents) => serde_json::from_str::<TGSDispatcherPreferences>(&contents)
+                .unwrap_or_else(|e| {
+                    error!(" --> Failed to parse existing config: {}, starting fresh", e);
+                    TGSDispatcherPreferences {
+                        active_configuration: None,
+                        configurations: Vec::new(),
+                    }
+                }),
+            Err(_) => TGSDispatcherPreferences {
+                active_configuration: None,
+                configurations: Vec::new(),
+            },
+        };
+
+        match preferences
+            .configurations
+            .iter_mut()
+            .find(|configuration| configuration.uuid == self.uuid)
+        {
+            Some(existing) => {
+                debug!("  --> replacing existing configuration {}", self.uuid);
+                *existing = self.clone();
+            }
+            None => {
+                debug!("  --> appending new configuration {}", self.uuid);
+                preferences.configurations.push(self.clone());
+            }
+        }
+        preferences.active_configuration = Some(self.uuid.clone());
+
+        match serde_json::to_string_pretty(&preferences) {
             Ok(json) => {
                 if let Err(e) = std::fs::write(&config_file_path, json) {
                     error!(" --> Failed to write config: {}", e);

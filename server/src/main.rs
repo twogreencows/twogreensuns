@@ -6,9 +6,9 @@ mod dispatcher;
 mod fronius;
 mod http_api;
 mod mdns;
-mod protocol;
 mod runtime;
 mod hex_utils;
+mod tesla;
 
 use std::sync::Arc;
 
@@ -16,7 +16,7 @@ use clap::Parser;
 use tracing::{debug, info};
 use tracing_subscriber::{filter::LevelFilter, layer::SubscriberExt, reload, util::SubscriberInitExt};
 
-use crate::application::{TGSApplication, LogLevelSetter};
+use crate::application::{TGSApplication, LogLevelSetterFunction};
 use crate::configuration::TGSDispatcherConfiguration;
 use crate::dispatcher::dispatcher_run;
 use crate::fronius::inverter_discoverer_run;
@@ -35,12 +35,7 @@ where
     S: tracing::Subscriber + for<'a> LookupSpan<'a>,
     N: for<'a> FormatFields<'a> + 'static,
 {
-    fn format_event(
-        &self,
-        ctx: &FmtContext<'_, S, N>,
-        mut writer: Writer<'_>,
-        event: &tracing::Event<'_>,
-    ) -> std::fmt::Result {
+    fn format_event( &self, ctx: &FmtContext<'_, S, N>, mut writer: Writer<'_>, event: &tracing::Event<'_>) -> std::fmt::Result {
         let meta = event.metadata();
         let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ");
         // pad level to 5, target to 35
@@ -59,34 +54,38 @@ struct TGSToolArgs {
 async fn main() {
     let args = TGSToolArgs::parse();
 
-    let level = std::env::var("TWOGREENSUNS_LOG").ok().and_then(|v| v.parse::<LevelFilter>().ok()).unwrap_or(LevelFilter::INFO);
+        //Read config and set runtime
+    TGSDispatcherConfiguration::ensure_directory_configuration();
+    let config = TGSDispatcherConfiguration::load_last_configuration();
+    let runtime = TGSDispatcherRuntime::new(config, String::new());
 
+        //init log level and put layer
+    let level = runtime.tgsbox_log_level;
+    info!("level is {level}");
     let (filter_layer, reload_handle) = reload::Layer::new(level);
     tracing_subscriber::registry().with(filter_layer).with(fmt::layer().event_format(AlignedFormatter)).init();
 
-    let log_level_setter: LogLevelSetter = Arc::new(move |level_str: &str| {
+    let log_level_setter: LogLevelSetterFunction = Arc::new(move |level_str: &str| {
         let new_level: LevelFilter = level_str.parse().map_err(|_| format!("invalid log level: '{}'", level_str))?;
         reload_handle.reload(new_level).map_err(|e| e.to_string())
     });
 
-    debug!("[main:main] Enter");
+    info!("[main:main] Enter: log level is {level}");
+    info!("[runtime:new] platform={} hostname={} inverter={} http_port={}",
+        runtime.tgsbox_platform, runtime.tgsbox_server_hostname,
+        runtime.tgsdevice_inverter_ipv4_address, runtime.tgsbox_server_httport);
 
-    TGSDispatcherConfiguration::ensure_directory_configuration();
-    let config = TGSDispatcherConfiguration::load_last_configuration();
-
-    // Start with no inverter address — inverter_discoverer_run  will find it
-    // asynchronously and notify the dispatcher when ready.
-    let runtime = TGSDispatcherRuntime::new(config, String::new());
-    let port = runtime.tgsbox_server_httport;
-    let hostname = runtime.tgsbox_server_hostname.clone();
-    let state = Arc::new(TGSApplication::new(runtime, log_level_setter));
+    let tgsbox_port = runtime.tgsbox_server_httport;
+    let tgsbox_hostname = runtime.tgsbox_server_hostname.clone();
+    let (blecar_commandchannel_tx, blecar_commandchannel_rx) = tokio::sync::mpsc::channel(32);
+    let state = Arc::new(TGSApplication::new(runtime, log_level_setter, blecar_commandchannel_tx));
 
     debug!("[main:main] Spawning all tasks");
     tokio::join!(
-            async { mdns_run(hostname, port).await },
+            async { mdns_run(tgsbox_hostname, tgsbox_port).await },
             async { inverter_discoverer_run(state.clone()).await },
             async { dispatcher_run(state.clone()).await },
-            async { http_api_run(state.clone(), port).await },
-            async { ble_discoverer_run(state.clone()).await },
+            async { http_api_run(state.clone(), tgsbox_port).await },
+            async { ble_discoverer_run(state.clone(), blecar_commandchannel_rx).await },
         );
 }

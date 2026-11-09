@@ -99,6 +99,7 @@ struct TimeSegment: Codable {
 }
 
 struct TGSConfiguration: Codable {
+    var uuid: String
     var installationDisplayName: String
     var installationLatitude: Double
     var installationLongitude: Double
@@ -106,8 +107,9 @@ struct TGSConfiguration: Codable {
     var teslaVin: String?
     var teslaMaxChargingAmps: Int
     var providerCosts:[TimeSegment]
-    
+
     enum CodingKeys: String, CodingKey {
+        case uuid
         case installationDisplayName = "installation_display_name"
         case installationLatitude = "installation_latitude"
         case installationLongitude = "installation_longitude"
