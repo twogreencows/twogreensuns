@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use serde::Serialize;
-use tracing::debug;
+use tracing::{debug, error, info};
 
 use crate::blecar::{TGSTeslaCarCommand, TGSTeslaState};
 use crate::fronius::TGSInverterDataEntry;
@@ -25,9 +25,28 @@ pub struct TGSStorage {
 
 impl TGSStorage {
     pub fn new(path: &Path) -> rusqlite::Result<Self> {
-        debug!("[storage:new] Enter {:?}", path);
-        let conn = Connection::open(path)?;
-        conn.execute_batch(
+        debug!("[storage:new] Enter");
+        info!("  --> database path: {:?}", path);
+        info!("  --> sqlite library version: {}", rusqlite::version());
+        debug!("  --> file exists: {}", path.exists());
+        match path.parent() {
+            Some(dir) => debug!("  --> parent directory {:?} exists: {}", dir, dir.exists()),
+            None => error!("  --> database path has no parent directory"),
+        }
+
+        let conn = match Connection::open(path) {
+            Ok(conn) => {
+                info!("  --> database opened (file now exists: {})", path.exists());
+                conn
+            }
+            Err(e) => {
+                error!("  --> failed to open database {:?}: {}", path, e);
+                return Err(e);
+            }
+        };
+
+        debug!("  --> creating events table and index if missing");
+        if let Err(e) = conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS events (
                  id                          INTEGER PRIMARY KEY AUTOINCREMENT,
                  timestamp                   INTEGER NOT NULL,  -- UTC unix ms
@@ -46,7 +65,11 @@ impl TGSStorage {
                  actions                     TEXT    NOT NULL   -- JSON array, '[]' if none
              );
              CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);",
-        )?;
+        ) {
+            error!("  --> failed to create schema: {}", e);
+            return Err(e);
+        }
+        info!("  --> schema ready");
         debug!("[storage:new] Exit");
         Ok(Self { conn: Mutex::new(conn) })
     }
@@ -62,7 +85,7 @@ impl TGSStorage {
         let actions_json = serde_json::to_string(actions)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         let conn = self.conn.lock().unwrap();
-        conn.execute(
+        let result = conn.execute(
             "INSERT INTO events (timestamp,
                  inverter_ac_voltage, inverter_photovoltaic_power, inverter_load_power,
                  inverter_grid_power, inverter_battery_power, inverter_battery_soc,
@@ -77,7 +100,11 @@ impl TGSStorage {
                 car.map(|c| c.charge_limit_percent),
                 actions_json,
             ],
-        )?;
+        );
+        if let Err(e) = result {
+            error!("[storage:write_event] insert failed: {}", e);
+            return Err(e);
+        }
         Ok(conn.last_insert_rowid())
     }
 
@@ -124,6 +151,11 @@ impl TGSStorage {
                 actions: serde_json::from_str(&actions_json).unwrap_or_default(),
             })
         })?;
-        rows.collect()
+        let events: rusqlite::Result<Vec<TGSEvent>> = rows.collect();
+        match &events {
+            Ok(list) => debug!("[storage:query_events] returned {} events", list.len()),
+            Err(e) => error!("[storage:query_events] query failed: {}", e),
+        }
+        events
     }
 }
