@@ -7,9 +7,10 @@ use axum::{
     routing::{get, post, put},
     Router,
 };
+use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 use tracing_subscriber::filter::LevelFilter;
 
 use tokio::sync::oneshot;
@@ -17,6 +18,7 @@ use tokio::sync::oneshot;
 use crate::application::TGSApplication;
 use crate::blecar::{TGSTeslaCarCommand, TGSBleCarRequest};
 use crate::configuration::TGSDispatcherConfiguration;
+use crate::storage::TGSEvent;
 
 pub async fn http_api_run(state: Arc<TGSApplication>, port: u16) {
     debug!("[http_api:http_api_run] Enter");
@@ -26,6 +28,7 @@ pub async fn http_api_run(state: Arc<TGSApplication>, port: u16) {
         .route("/api/v1/runtime", get(handle_get_runtime).put(handle_put_runtime))
         .route("/api/v1/config", get(handle_get_config))
         .route("/api/v1/config", put(handle_put_config))
+        .route("/api/v1/events", get(handle_get_events))
         .route("/api/v1/car/command", post(handle_car_command))
         .with_state(state);
 
@@ -67,6 +70,59 @@ async fn handle_put_config( State(state): State<Arc<TGSApplication>>, Json(updat
     runtime.config = updated_configuration;
     runtime.config.save();
     StatusCode::OK
+}
+
+#[derive(Deserialize)]
+struct TGSEventsQuery {
+    from: Option<String>,
+    to: Option<String>,
+    date: Option<String>,
+}
+
+/// RFC3339 timestamp, or a plain `YYYY-MM-DD` date meaning 00:00:00 UTC.
+fn parse_time_bound(text: &str) -> Option<DateTime<Utc>> {
+    if let Ok(timestamp) = DateTime::parse_from_rfc3339(text) {
+        return Some(timestamp.with_timezone(&Utc));
+    }
+    NaiveDate::parse_from_str(text, "%Y-%m-%d").ok().map(|d| d.and_time(NaiveTime::MIN).and_utc())
+}
+
+async fn handle_get_events(
+    State(state): State<Arc<TGSApplication>>,
+    Query(query): Query<TGSEventsQuery>,
+) -> Result<Json<Vec<TGSEvent>>, StatusCode> {
+    debug!("[http_api:handle_get_events] Enter from={:?} to={:?} date={:?}", query.from, query.to, query.date);
+
+    let (from, to) = match &query.date {
+        Some(day) => {
+            if query.from.is_some() || query.to.is_some() {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            let start = NaiveDate::parse_from_str(day, "%Y-%m-%d")
+                .map_err(|_| StatusCode::BAD_REQUEST)?
+                .and_time(NaiveTime::MIN)
+                .and_utc();
+            (Some(start), Some(start + Duration::days(1)))
+        }
+        None => {
+            let parse = |value: &Option<String>| match value {
+                None => Ok(None),
+                Some(text) => parse_time_bound(text).map(Some).ok_or(StatusCode::BAD_REQUEST),
+            };
+            (parse(&query.from)?, parse(&query.to)?)
+        }
+    };
+
+    // The query can return a lot of rows, so keep it off the async worker threads.
+    let events = tokio::task::spawn_blocking(move || state.storage.query_events(from, to))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|e| {
+            error!("[http_api:handle_get_events] query failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    debug!("[http_api:handle_get_events] Exit ({} events)", events.len());
+    Ok(Json(events))
 }
 
 #[derive(Deserialize)]

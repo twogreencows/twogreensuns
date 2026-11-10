@@ -7,6 +7,7 @@ mod fronius;
 mod http_api;
 mod mdns;
 mod runtime;
+mod storage;
 mod hex_utils;
 mod tesla;
 
@@ -24,6 +25,7 @@ use crate::http_api::http_api_run;
 use crate::blediscoverer::ble_discoverer_run;
 use crate::mdns::mdns_run;
 use crate::runtime::TGSDispatcherRuntime;
+use crate::storage::TGSStorage;
 
 use tracing_subscriber::fmt::{self, format::Writer, FmtContext, FormatEvent, FormatFields};
 use tracing_subscriber::registry::LookupSpan;
@@ -78,7 +80,9 @@ async fn main() {
     let tgsbox_port = runtime.tgsbox_server_httport;
     let tgsbox_hostname = runtime.tgsbox_server_hostname.clone();
     let (blecar_commandchannel_tx, blecar_commandchannel_rx) = tokio::sync::mpsc::channel(32);
-    let state = Arc::new(TGSApplication::new(runtime, log_level_setter, blecar_commandchannel_tx));
+    let storage = TGSStorage::new(&TGSDispatcherConfiguration::events_database_path())
+        .expect("cannot open events database");
+    let state = Arc::new(TGSApplication::new(runtime, log_level_setter, blecar_commandchannel_tx, storage));
 
     debug!("[main:main] Spawning all tasks");
     tokio::join!(

@@ -37,6 +37,7 @@
 // ---------------------------------------------------------------------------
 
 use std::env;
+use std::path::PathBuf;
 use chrono::NaiveTime;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -61,6 +62,22 @@ pub struct TGSDispatcherConfiguration {
 }
 
 impl TGSDispatcherConfiguration {
+    /// Directory holding the configuration file and the events database.
+    fn configuration_directory() -> PathBuf {
+        env::home_dir()
+            .expect("home directory should be present")
+            .join(".twogreensuns")
+    }
+
+    pub fn configuration_file_path() -> PathBuf {
+        Self::configuration_directory().join("configurations.json")
+    }
+
+    /// SQLite events database, stored next to the configuration file.
+    pub fn events_database_path() -> PathBuf {
+        Self::configuration_directory().join("events.db")
+    }
+
     pub fn ensure_directory_configuration() {
         match env::home_dir() {
             Some(mut path) => {
@@ -80,9 +97,7 @@ impl TGSDispatcherConfiguration {
     }
 
     pub fn load_last_configuration() -> Self {
-        let config_file_path = env::home_dir()
-            .expect("home directory should be present")
-            .join(".twogreensuns/configurations.json");
+        let config_file_path = Self::configuration_file_path();
         debug!("[configuration:load_last_configuration] Load configuration");
 
         if !config_file_path.exists() {
@@ -117,9 +132,7 @@ impl TGSDispatcherConfiguration {
 
     pub fn save(&self) {
         debug!("[configuration:save] Enter");
-        let config_file_path = env::home_dir()
-            .expect(" --> home directory should be present")
-            .join(".twogreensuns/configurations.json");
+        let config_file_path = Self::configuration_file_path();
 
         debug!("  --> saving to {:?}", config_file_path);
 

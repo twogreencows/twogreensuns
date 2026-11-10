@@ -27,6 +27,7 @@ p256 = { version = "0.13", features = ["ecdh"] }
 hmac = "0.12"
 sha2 = "0.10"
 aes-gcm = "0.10"
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 dns-sd = "0.1"

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use chrono::{Local, NaiveTime, Utc};
+use chrono::{NaiveTime, Utc};
 use reqwest::Client;
 use tokio::sync::oneshot;
 use tokio::time::{sleep, Duration};
@@ -38,19 +38,23 @@ pub async fn dispatcher_run(state: Arc<TGSApplication>) {
             request_tesla(&state, TGSBleCarRequest::ReadState),
             fronius_fetch_data(&client, &base_url),
         );
+        let now = Utc::now();
 
         match fronius {
             Ok(data) => {
                 info!(
                     " --> [{}] Polling inverter with result AC_VOLTAGE={} P_PV={:.0}W P_Load={:.0}W P_Grid={:.0}W P_Akku={:.0}W",
-                    Local::now().format("%Y-%m-%d %H:%M:%S"), data.ac_voltage, data.p_pv, data.p_load, data.p_grid, data.p_akku
+                    now.format("%Y-%m-%d %H:%M:%S UTC"), data.ac_voltage, data.p_pv, data.p_load, data.p_grid, data.p_akku
                 );
 
-                let now = Utc::now().time();
                 let actions = {
                     let runtime = state.runtime.read().await;
-                    dispatcher_decide_actions(&data, tesla.as_ref(), &runtime.config, now)
+                    dispatcher_decide_actions(&data, tesla.as_ref(), &runtime.config, now.time())
                 };
+
+                if let Err(e) = state.storage.write_event(now, &data, tesla.as_ref(), &actions) {
+                    error!("[dispatcher:dispatcher_run] storage write failed: {}", e);
+                }
 
                 debug!("  --> updating inverter state");
                 *state.inverter_state.write().await = Some(data);
