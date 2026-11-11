@@ -102,3 +102,13 @@ Jetpack Compose app, minSdk 26. Server URL is set at build time via `BuildConfig
 1. Open the `client-android/` folder in Android Studio.
 2. Edit `app/build.gradle.kts` and set `SERVER_URL` to your server address.
 3. Build and run on an emulator or device.
+
+
+## Run on py with tmux
+ssh rasp-beau1
+tmux attach -t tgs        # or: tmux a
+tmux ls  
+We exit with crtl-B d
+
+for a new tmux session
+tmux new -s tgs 

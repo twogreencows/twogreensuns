@@ -58,6 +58,39 @@ struct RuntimeResponse: Codable {
     let tesla: TeslaState?
 }
 
+/// Mirrors the server's `TGSTeslaCarCommand` enum. serde writes unit variants as
+/// plain strings ("WakeUp") and value variants as one-key objects ({"SetChargingAmps": 12}).
+struct TGSTeslaCarCommand: Codable {
+    let name: String
+    let value: Int?
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let text = try? container.decode(String.self) {
+            name = text; value = nil
+        } else {
+            let dict = try container.decode([String: Int].self)
+            name = dict.keys.first ?? "?"; value = dict.values.first
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        if let value { try container.encode([name: value]) } else { try container.encode(name) }
+    }
+
+    var text: String { value.map { "\(name)(\($0))" } ?? name }
+}
+
+/// One poll cycle stored by the server: inverter reading, car state, and the commands sent.
+struct TGSEvent: Codable, Identifiable {
+    let id: Int
+    let timestamp: Date
+    let inverter: InverterData
+    let tesla: TeslaState?
+    let actions: [TGSTeslaCarCommand]
+}
+
 struct NaiveTime: Comparable {
     let secondsSinceMidnight: Int
 

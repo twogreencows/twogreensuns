@@ -26,9 +26,13 @@ struct OneInstallationView: View {
                 .tabItem { Label("Tesla", systemImage: "bolt.car.fill") }
                 .tag(1)
 
+            EventsView()
+                .tabItem { Label("Données", systemImage: "list.bullet.rectangle") }
+                .tag(2)
+
             SettingsView()
                 .tabItem { Label("Config", systemImage: "gear") }
-                .tag(2)
+                .tag(3)
         }
         .navigationTitle(title)
         .task {

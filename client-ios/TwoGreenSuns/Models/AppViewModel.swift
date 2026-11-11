@@ -64,6 +64,25 @@ final class TGSInstallationEnvironment: ObservableObject {
         }
     }
 
+    // MARK: - Events
+
+    @Published var events: [TGSEvent] = []
+
+    /// Loads the events of one calendar day in the device's local time zone.
+    /// The local midnight boundaries are converted to UTC instants for the server.
+    func loadEvents(for day: Date) async {
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: day)
+        guard let end = calendar.date(byAdding: .day, value: 1, to: start) else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            events = try await api.events(from: start, to: end)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
 //    func teslaDiscover() async {
 //        do {
 //            try await api.teslaDiscover()

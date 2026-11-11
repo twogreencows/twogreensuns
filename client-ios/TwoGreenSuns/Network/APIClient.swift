@@ -67,6 +67,17 @@ final class TGSAPIClient {
         try await put("config", body: config)
     }
 
+    // MARK: - Events
+
+    /// Returns every event with `from <= timestamp < to`. Both bounds are sent as
+    /// RFC 3339 UTC strings, so callers can pass local-day boundaries directly.
+    func events(from: Date, to: Date) async throws -> [TGSEvent] {
+        try await get("events", query: [
+            URLQueryItem(name: "from", value: Self.iso8601.string(from: from)),
+            URLQueryItem(name: "to", value: Self.iso8601.string(from: to))
+        ])
+    }
+
     // MARK: - Log level
 
     func setLogLevel(_ level: String) async throws {
@@ -94,8 +105,10 @@ final class TGSAPIClient {
 
     // MARK: - Helpers
 
-    private func get<T: Decodable>(_ path: String) async throws -> T {
-        let url = baseURL.appendingPathComponent(path)
+    private func get<T: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> T {
+        var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)
+        if !query.isEmpty { components?.queryItems = query }
+        guard let url = components?.url else { throw APIError.invalidURL }
         print("sending to \(url)")
         let (data, response) = try await session.data(from: url)
         print("[APIClient] raw response: \(String(data: data, encoding: .utf8) ?? "<binary>")")

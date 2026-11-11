@@ -19,6 +19,11 @@ pub struct TGSEvent {
     pub actions: Vec<TGSTeslaCarCommand>,
 }
 
+/// Round to 2 decimal places (xxx.yy).
+fn round2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
 pub struct TGSStorage {
     conn: Mutex<Connection>,
 }
@@ -94,7 +99,8 @@ impl TGSStorage {
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
             params![
                 timestamp.timestamp_millis(),
-                inv.ac_voltage, inv.p_pv, inv.p_load, inv.p_grid, inv.p_akku, inv.battery_soc,
+                round2(inv.ac_voltage), round2(inv.p_pv), round2(inv.p_load),
+                round2(inv.p_grid), round2(inv.p_akku), round2(inv.battery_soc),
                 car.map(|c| c.present), car.map(|c| c.connected), car.map(|c| c.plugged),
                 car.map(|c| c.charging), car.map(|c| c.charging_amps),
                 car.map(|c| c.charge_limit_percent),
