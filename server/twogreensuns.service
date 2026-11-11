@@ -1,0 +1,19 @@
+[Unit]
+Description=TwoGreenSuns power management daemon
+Wants=network-online.target bluetooth.service
+After=network-online.target bluetooth.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=lcerveau
+Group=lcerveau
+SupplementaryGroups=bluetooth
+WorkingDirectory=/home/lcerveau/.twogreensuns
+ExecStart=/home/lcerveau/twogreensuns/server/target/release/twogreensuns
+Environment=RUST_LOG=info
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
