@@ -1,13 +1,15 @@
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Instant;
 
 use chrono::{NaiveTime, Utc};
 use reqwest::Client;
 use tokio::sync::oneshot;
 use tokio::time::{sleep, Duration};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, Span};
 
 use crate::application::TGSApplication;
-use crate::blecar::{TGSTeslaCarCommand, TGSTeslaState, TGSBleCarRequest};
+use crate::blecar::{TGSTeslaCarCommand, TGSTeslaState, TGSBleCarRequest, NEXT_BLE_REQUEST_ID};
 use crate::configuration::TGSDispatcherConfiguration;
 use crate::fronius::{fronius_fetch_data, TGSInverterDataEntry};
 
@@ -80,28 +82,60 @@ pub async fn dispatcher_run(state: Arc<TGSApplication>) {
 /// Send a request to the BLE task and wait for the resulting Tesla state.
 /// Returns `None` when the BLE task is unavailable (e.g. no VIN configured) or
 /// the request failed — the caller treats that as "no car".
+///
+/// Runs in a `ble_request` span (unique `id`, `source = "dispatcher"`) that is sent along with the
+/// request, so the BLE task logs the whole trace of this request under the same id.
+#[tracing::instrument(name = "ble_request", skip_all, fields(id = NEXT_BLE_REQUEST_ID.fetch_add(1, Ordering::Relaxed), source = "dispatcher"))]
 async fn request_tesla(state: &Arc<TGSApplication>, req: TGSBleCarRequest) -> Option<TGSTeslaState> {
+    debug!("[dispatcher:request_tesla] Enter {:?}", req);
+    let started = Instant::now();
     let (reply_tx, reply_rx) = oneshot::channel();
-    if state.blecar_commandchannel_tx.send((req, reply_tx)).await.is_err() {
-        debug!("[dispatcher:request_tesla] BLE task unavailable");
+    if state.blecar_commandchannel_tx.send((req, reply_tx, Span::current())).await.is_err() {
+        debug!("[dispatcher:request_tesla] BLE task unavailable, request not sent");
         return None;
     }
+    debug!("  --> request queued, waiting for the BLE reply");
     match reply_rx.await {
-        Ok(Ok(tesla_state)) => Some(tesla_state),
+        Ok(Ok(tesla_state)) => {
+            debug!("[dispatcher:request_tesla] Exit OK after {:?}, state {:?}", started.elapsed(), tesla_state);
+            Some(tesla_state)
+        }
         Ok(Err(e)) => {
-            debug!("[dispatcher:request_tesla] Tesla request failed: {}", e);
+            debug!("[dispatcher:request_tesla] Exit with Tesla error after {:?}: {}", started.elapsed(), e);
             None
         }
         Err(_) => {
-            debug!("[dispatcher:request_tesla] BLE task dropped the reply");
+            debug!("[dispatcher:request_tesla] Exit, BLE task dropped the reply after {:?}", started.elapsed());
             None
         }
     }
 }
 
+/// Charging amps to request, from the solar power and the battery state.
+///
+/// STUB: returns a fixed 5A placeholder (capped by `max_amps`) whatever the sun and the battery.
+/// The real computation will use the solar excess (`data.p_pv`, `data.p_load`, `data.ac_voltage`)
+/// and the battery state of charge (`data.battery_soc`), for example lower amps while the battery
+/// is still low.
+fn dispatcher_compute_target_amps(_data: &TGSInverterDataEntry, max_amps: f64) -> f64 {
+    // TODO: placeholder value, replace with the solar and battery based computation.
+    5.0_f64.min(max_amps)
+}
+
 /// Decide which charging commands (if any) to send to the car this cycle.
 ///
 /// `tesla` is the freshly-read car state, or `None` when the car is unreachable.
+///
+/// Algorithm (the car's own charging state is the memory of the hysteresis, nothing is stored):
+///
+/// 1. Battery hysteresis, on the state of charge (0.0 - 1.0):
+///    - car charging and soc < 0.15: stop charging, whatever the solar production.
+///    - car idle and soc <= 0.20: do nothing, the battery has not recovered enough to start.
+///    - otherwise (charging with soc >= 0.15, or idle with soc > 0.20): go to rule 2.
+/// 2. Solar: the amps come from `dispatcher_compute_target_amps` (solar power and battery state).
+///    If amps >= 1: set the charging amps (truncated to a whole number) and start charging if the
+///    car is idle.
+/// 3. Otherwise (no solar, or less than 1A): stop if charging, else do nothing.
 pub fn dispatcher_decide_actions(
     data: &TGSInverterDataEntry,
     tesla: Option<&TGSTeslaState>,
@@ -114,10 +148,19 @@ pub fn dispatcher_decide_actions(
 
     let mut actions = Vec::new();
 
+    // Protect the home battery: below 15% SoC (fraction 0.15), never charge the car.
+    if data.battery_soc < 0.15 {
+        debug!("  --> battery SoC {:.2} < 0.15, car charging not allowed", data.battery_soc);
+        if charging_now {
+            actions.push(TGSTeslaCarCommand::StopCharging);
+        }
+        debug!("[dispatcher:dispatcher_decide_actions] Exit");
+        return actions;
+    }
+
     if data.p_pv > 0.0 {
-        let excess_watts = data.p_pv - data.p_load.abs();
-        let target_amps = (excess_watts / data.ac_voltage).clamp(0.0, max_amps);
-        debug!("  --> solar active: excess={:.0}W target={:.2}A max={:.0}A", excess_watts, target_amps, max_amps);
+        let target_amps = dispatcher_compute_target_amps(data, max_amps);
+        debug!("  --> solar active: target={:.2}A max={:.0}A", target_amps, max_amps);
 
         if target_amps >= 1.0 {
             actions.push(TGSTeslaCarCommand::SetChargingAmps(target_amps as u8));
@@ -138,87 +181,193 @@ pub fn dispatcher_decide_actions(
 
 #[cfg(test)]
 mod tests {
+    //! Rules of `dispatcher_decide_actions`, evaluated in this order:
+    //!
+    //! 1. Battery protection: state of charge (0.0 - 1.0) below 0.15 means the car must never
+    //!    charge. Stop it if it is charging, otherwise do nothing, whatever the solar production.
+    //! 2. Solar excess: when the panels produce, excess = p_pv - |p_load| and
+    //!    amps = excess / ac_voltage, clamped between 0 and the configured maximum.
+    //!    If amps >= 1: set the charging amps (truncated to a whole number) and start charging
+    //!    if the car is idle.
+    //! 3. Otherwise (no solar, or less than 1A of excess): stop if charging, else do nothing.
+
     use super::*;
     use chrono::Utc;
 
-    fn make_cfg(max_amps: u8) -> TGSDispatcherConfiguration {
-        TGSDispatcherConfiguration {
-            tesla_max_charging_amps: max_amps,
-            ..Default::default()
-        }
-    }
-
-    fn make_data(p_pv: f64, p_load: f64) -> TGSInverterDataEntry {
+    fn build_inverter_data(p_pv: f64, p_load: f64, battery_soc: f64) -> TGSInverterDataEntry {
         TGSInverterDataEntry {
             ac_voltage: 230.0,
             p_pv,
             p_load,
             p_grid: 0.0,
             p_akku: 0.0,
-            battery_soc: 0.0,
+            battery_soc,
             timestamp: Utc::now(),
         }
     }
 
-    fn tesla(charging: bool) -> TGSTeslaState {
-        TGSTeslaState { charging, ..Default::default() }
-    }
-
-    fn noon() -> NaiveTime {
-        NaiveTime::from_hms_opt(12, 0, 0).unwrap()
-    }
-
+    // Rule 1: battery at 10% (below 0.15) while the car charges. Solar excess (3000W - 500W) is
+    // ignored, the only action is to stop the car.
     #[test]
-    fn solar_excess_sets_amps_and_starts_when_idle() {
-        let cfg = make_cfg(16);
-        let data = make_data(3000.0, 500.0); // 2500W / 230V ≈ 10.8A
-        let actions = dispatcher_decide_actions(&data, Some(&tesla(false)), &cfg, noon());
-        assert_eq!(
-            actions,
-            vec![
-                TGSTeslaCarCommand::SetChargingAmps(10),
-                TGSTeslaCarCommand::StartCharging,
-            ]
-        );
-    }
+    fn low_battery_stops_charging_even_with_solar_excess() {
+        let inverter_data = build_inverter_data(3000.0, 500.0, 0.10);
+        let tesla_state = TGSTeslaState { charging: true, ..Default::default() };
+        let configuration = TGSDispatcherConfiguration { tesla_max_charging_amps: 16, ..Default::default() };
+        let current_time = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
 
-    #[test]
-    fn solar_excess_only_sets_amps_when_already_charging() {
-        let cfg = make_cfg(16);
-        let data = make_data(3000.0, 500.0);
-        let actions = dispatcher_decide_actions(&data, Some(&tesla(true)), &cfg, noon());
-        assert_eq!(actions, vec![TGSTeslaCarCommand::SetChargingAmps(10)]);
-    }
+        let actions = dispatcher_decide_actions(&inverter_data, Some(&tesla_state), &configuration, current_time);
 
-    #[test]
-    fn no_solar_stops_when_charging() {
-        let cfg = make_cfg(16);
-        let data = make_data(0.0, 500.0);
-        let actions = dispatcher_decide_actions(&data, Some(&tesla(true)), &cfg, noon());
         assert_eq!(actions, vec![TGSTeslaCarCommand::StopCharging]);
     }
 
+    // Rule 1: battery at 10% while the car is idle. Nothing to stop, and solar excess must not
+    // start the charge either.
     #[test]
-    fn no_solar_does_nothing_when_idle() {
-        let cfg = make_cfg(16);
-        let data = make_data(0.0, 500.0);
-        let actions = dispatcher_decide_actions(&data, Some(&tesla(false)), &cfg, noon());
+    fn low_battery_does_not_start_charging_even_with_solar_excess() {
+        let inverter_data = build_inverter_data(3000.0, 500.0, 0.10);
+        let tesla_state = TGSTeslaState { charging: false, ..Default::default() };
+        let configuration = TGSDispatcherConfiguration { tesla_max_charging_amps: 16, ..Default::default() };
+        let current_time = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+
+        let actions = dispatcher_decide_actions(&inverter_data, Some(&tesla_state), &configuration, current_time);
+
         assert!(actions.is_empty());
     }
 
+    // Rule 1 boundary: at exactly 0.15 the battery is NOT considered low (the test is strictly
+    // `< 0.15`), so the solar rule applies: 2500W / 230V = 10.9A, truncated to 10A.
     #[test]
-    fn solar_less_than_load_stops() {
-        let cfg = make_cfg(16);
-        let data = make_data(100.0, 500.0); // excess negative → clamped to 0
-        let actions = dispatcher_decide_actions(&data, Some(&tesla(true)), &cfg, noon());
+    fn battery_at_exactly_threshold_does_not_stop_charging() {
+        let inverter_data = build_inverter_data(3000.0, 500.0, 0.15);
+        let tesla_state = TGSTeslaState { charging: true, ..Default::default() };
+        let configuration = TGSDispatcherConfiguration { tesla_max_charging_amps: 16, ..Default::default() };
+        let current_time = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+
+        let actions = dispatcher_decide_actions(&inverter_data, Some(&tesla_state), &configuration, current_time);
+
+        assert_eq!(actions, vec![TGSTeslaCarCommand::SetChargingAmps(10)]);
+    }
+
+    // Rule 1 hysteresis, not implemented yet: the car is charging and the battery is at 17%, inside
+    // the 0.15 - 0.20 band. Charging must continue (only a drop below 0.15 stops it), with the
+    // amps coming from `dispatcher_compute_target_amps`.
+    #[test]
+    #[ignore = "hysteresis not implemented yet"]
+    fn battery_inside_band_keeps_charging_car_charging() {
+        todo!("charging, soc 0.17, solar excess: expect SetChargingAmps and no StopCharging");
+    }
+
+    // Rule 1 hysteresis, not implemented yet: the car is idle and the battery is at 17%, inside the
+    // band. The battery has not recovered above 0.20, so the car must not start, even with solar
+    // excess.
+    #[test]
+    #[ignore = "hysteresis not implemented yet"]
+    fn battery_inside_band_does_not_start_idle_car() {
+        todo!("idle, soc 0.17, solar excess: expect no action");
+    }
+
+    // Rule 1 hysteresis, not implemented yet: the car is idle and the battery has recovered to 25%
+    // (above 0.20), so the solar rule applies and the car is started.
+    #[test]
+    #[ignore = "hysteresis not implemented yet"]
+    fn battery_above_start_threshold_starts_idle_car() {
+        todo!("idle, soc 0.25, solar excess: expect SetChargingAmps then StartCharging");
+    }
+
+    // Rule 1 boundary, not implemented yet: the idle car at exactly 0.20 must not start (the start
+    // needs soc strictly above 0.20), while the same car at 0.21 must start.
+    #[test]
+    #[ignore = "hysteresis not implemented yet"]
+    fn battery_at_exactly_start_threshold_does_not_start_idle_car() {
+        todo!("idle, soc 0.20 then 0.21, solar excess: expect no action then start");
+    }
+
+    // Rule 2, not implemented yet: the amps depend on the battery state as well as the sun, so the
+    // same solar excess must give fewer amps with a low battery than with a full one. The exact
+    // curve is still to be defined in `dispatcher_compute_target_amps`.
+    #[test]
+    #[ignore = "amps depending on the battery state not implemented yet"]
+    fn target_amps_are_lower_with_a_low_battery_than_with_a_full_one() {
+        todo!("same solar excess, soc 0.25 vs soc 0.90: expect fewer amps at 0.25");
+    }
+
+    // Rule 2: 3000W produced, 500W consumed by the house, so 2500W / 230V = 10.9A, truncated to
+    // 10A. The car is idle, so it must also be started, after its amps are set.
+    #[test]
+    fn solar_excess_sets_amps_then_starts_idle_car() {
+        let inverter_data = build_inverter_data(3000.0, 500.0, 0.50);
+        let tesla_state = TGSTeslaState { charging: false, ..Default::default() };
+        let configuration = TGSDispatcherConfiguration { tesla_max_charging_amps: 16, ..Default::default() };
+        let current_time = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+
+        let actions = dispatcher_decide_actions(&inverter_data, Some(&tesla_state), &configuration, current_time);
+
+        assert_eq!(actions, vec![TGSTeslaCarCommand::SetChargingAmps(10), TGSTeslaCarCommand::StartCharging]);
+    }
+
+    // Rule 2: same excess as above, but the car already charges, so only the amps are adjusted.
+    #[test]
+    fn solar_excess_only_adjusts_amps_when_car_already_charging() {
+        let inverter_data = build_inverter_data(3000.0, 500.0, 0.50);
+        let tesla_state = TGSTeslaState { charging: true, ..Default::default() };
+        let configuration = TGSDispatcherConfiguration { tesla_max_charging_amps: 16, ..Default::default() };
+        let current_time = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+
+        let actions = dispatcher_decide_actions(&inverter_data, Some(&tesla_state), &configuration, current_time);
+
+        assert_eq!(actions, vec![TGSTeslaCarCommand::SetChargingAmps(10)]);
+    }
+
+    // Rule 2: 10000W - 500W = 9500W / 230V = 41A, but the configured maximum is 8A.
+    #[test]
+    fn solar_excess_is_clamped_to_configured_max_amps() {
+        let inverter_data = build_inverter_data(10000.0, 500.0, 0.50);
+        let tesla_state = TGSTeslaState { charging: true, ..Default::default() };
+        let configuration = TGSDispatcherConfiguration { tesla_max_charging_amps: 8, ..Default::default() };
+        let current_time = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+
+        let actions = dispatcher_decide_actions(&inverter_data, Some(&tesla_state), &configuration, current_time);
+
+        assert_eq!(actions, vec![TGSTeslaCarCommand::SetChargingAmps(8)]);
+    }
+
+    // Rule 3: no solar production at all while the car charges, so it must be stopped.
+    #[test]
+    fn no_solar_stops_charging_car() {
+        let inverter_data = build_inverter_data(0.0, 500.0, 0.50);
+        let tesla_state = TGSTeslaState { charging: true, ..Default::default() };
+        let configuration = TGSDispatcherConfiguration { tesla_max_charging_amps: 16, ..Default::default() };
+        let current_time = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+
+        let actions = dispatcher_decide_actions(&inverter_data, Some(&tesla_state), &configuration, current_time);
+
         assert_eq!(actions, vec![TGSTeslaCarCommand::StopCharging]);
     }
 
+    // Rule 3: no solar production and the car is idle, so there is nothing to do.
     #[test]
-    fn solar_clamped_to_max_amps() {
-        let cfg = make_cfg(8);
-        let data = make_data(10000.0, 500.0); // huge excess → capped at 8A
-        let actions = dispatcher_decide_actions(&data, Some(&tesla(true)), &cfg, noon());
-        assert_eq!(actions, vec![TGSTeslaCarCommand::SetChargingAmps(8)]);
+    fn no_solar_does_nothing_when_car_idle() {
+        let inverter_data = build_inverter_data(0.0, 500.0, 0.50);
+        let tesla_state = TGSTeslaState { charging: false, ..Default::default() };
+        let configuration = TGSDispatcherConfiguration { tesla_max_charging_amps: 16, ..Default::default() };
+        let current_time = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+
+        let actions = dispatcher_decide_actions(&inverter_data, Some(&tesla_state), &configuration, current_time);
+
+        assert!(actions.is_empty());
+    }
+
+    // Rule 3: panels produce 100W but the house consumes 500W, so the excess is negative
+    // (clamped to 0A, below the 1A minimum) and the charging car must be stopped.
+    #[test]
+    fn solar_below_house_load_stops_charging_car() {
+        let inverter_data = build_inverter_data(100.0, 500.0, 0.50);
+        let tesla_state = TGSTeslaState { charging: true, ..Default::default() };
+        let configuration = TGSDispatcherConfiguration { tesla_max_charging_amps: 16, ..Default::default() };
+        let current_time = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+
+        let actions = dispatcher_decide_actions(&inverter_data, Some(&tesla_state), &configuration, current_time);
+
+        assert_eq!(actions, vec![TGSTeslaCarCommand::StopCharging]);
     }
 }

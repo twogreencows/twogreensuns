@@ -27,7 +27,7 @@ use crate::mdns::mdns_run;
 use crate::runtime::TGSDispatcherRuntime;
 use crate::storage::TGSStorage;
 
-use tracing_subscriber::fmt::{self, format::Writer, FmtContext, FormatEvent, FormatFields};
+use tracing_subscriber::fmt::{self, format::Writer, FmtContext, FormatEvent, FormatFields, FormattedFields};
 use tracing_subscriber::registry::LookupSpan;
 
 struct AlignedFormatter;
@@ -42,6 +42,16 @@ where
         let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ");
         // pad level to 5, target to 35
         write!(writer, "{}  {:>5} {:<35} ", ts, meta.level(), meta.target())?;
+        // Fields of the enclosing spans, e.g. [id=3 source="http"] for a BLE request.
+        if let Some(scope) = ctx.event_scope() {
+            for span in scope.from_root() {
+                if let Some(fields) = span.extensions().get::<FormattedFields<N>>() {
+                    if !fields.is_empty() {
+                        write!(writer, "[{}] ", fields)?;
+                    }
+                }
+            }
+        }
         ctx.field_format().format_fields(writer.by_ref(), event)?;
         writeln!(writer)
     }

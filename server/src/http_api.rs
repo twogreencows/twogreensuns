@@ -1,4 +1,6 @@
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::{
     extract::{Query, State},
@@ -10,13 +12,13 @@ use axum::{
 use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn, Span};
 use tracing_subscriber::filter::LevelFilter;
 
 use tokio::sync::oneshot;
 
 use crate::application::TGSApplication;
-use crate::blecar::{TGSTeslaCarCommand, TGSBleCarRequest};
+use crate::blecar::{TGSTeslaCarCommand, TGSBleCarRequest, NEXT_BLE_REQUEST_ID};
 use crate::configuration::TGSDispatcherConfiguration;
 use crate::storage::TGSEvent;
 
@@ -151,36 +153,54 @@ async fn handle_put_runtime(
     state.runtime.write().await.tgsbox_log_level = new_level;
     (StatusCode::OK, Json(json!({ "log_level": updated_log_level.log_level })))
 }
-/// Forward a charging command to the BLE task and return the resulting Tesla state.
-async fn send_car_command(
+/// Forward a request (a state read or a charging command) to the BLE task and return the
+/// resulting Tesla state.
+///
+/// Runs in a `ble_request` span (unique `id`, `source = "http"`) that is sent along with the
+/// request, so the BLE task logs the whole trace of this request under the same id.
+#[tracing::instrument(name = "ble_request", skip_all, fields(id = NEXT_BLE_REQUEST_ID.fetch_add(1, Ordering::Relaxed), source = "http"))]
+async fn send_car_request(
     state: &Arc<TGSApplication>,
-    command: TGSTeslaCarCommand,
+    request: TGSBleCarRequest,
 ) -> (StatusCode, Json<Value>) {
+    debug!("[http_api:send_car_request] Enter {:?}", request);
+    let started = Instant::now();
     let (reply_tx, reply_rx) = oneshot::channel();
     if state
         .blecar_commandchannel_tx
-        .send((TGSBleCarRequest::Action(command), reply_tx))
+        .send((request, reply_tx, Span::current()))
         .await
         .is_err()
     {
+        warn!("[http_api:send_car_request] BLE task unavailable, request not sent");
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "BLE task unavailable (no VIN configured?)" })),
         );
     }
+    debug!("  --> request queued, waiting for the BLE reply");
     match reply_rx.await {
-        Ok(Ok(tesla_state)) => (
-            StatusCode::OK,
-            Json(serde_json::to_value(tesla_state).unwrap_or(Value::Null)),
-        ),
-        Ok(Err(e)) => (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": e.to_string() })),
-        ),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "no reply from BLE task" })),
-        ),
+        Ok(Ok(tesla_state)) => {
+            debug!("[http_api:send_car_request] Exit OK after {:?}, state {:?}", started.elapsed(), tesla_state);
+            (
+                StatusCode::OK,
+                Json(serde_json::to_value(tesla_state).unwrap_or(Value::Null)),
+            )
+        }
+        Ok(Err(e)) => {
+            warn!("[http_api:send_car_request] Exit with BLE error after {:?}: {}", started.elapsed(), e);
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": e.to_string() })),
+            )
+        }
+        Err(_) => {
+            warn!("[http_api:send_car_request] Exit, BLE task dropped the reply after {:?}", started.elapsed());
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "no reply from BLE task" })),
+            )
+        }
     }
 }
 
@@ -190,23 +210,29 @@ struct CarCommandQuery {
     value: Option<u8>,
 }
 
-/// `POST /api/v1/car/command?command=start|stop|amps|limit[&value=N]`
+/// `POST /api/v1/car/command?command=chargestate|start|stop|amps|limit[&value=N]`
+///
+/// `chargestate` only reads the car state (`TGSBleCarRequest::ReadState`), no action is sent.
 async fn handle_car_command(
     State(state): State<Arc<TGSApplication>>,
     Query(params): Query<CarCommandQuery>,
 ) -> (StatusCode, Json<Value>) {
     debug!("[http_api:handle_car_command] Enter (command={}, value={:?})", params.command, params.value);
-    let command = match (params.command.as_str(), params.value) {
-        ("start", _) => TGSTeslaCarCommand::StartCharging,
-        ("stop", _) => TGSTeslaCarCommand::StopCharging,
-        ("amps", Some(v)) => TGSTeslaCarCommand::SetChargingAmps(v),
-        ("limit", Some(v)) => TGSTeslaCarCommand::SetChargeLimit(v),
+    let request = match (params.command.as_str(), params.value) {
+        ("chargestate", _) => TGSBleCarRequest::ReadState,
+        ("start", _) => TGSBleCarRequest::Action(TGSTeslaCarCommand::StartCharging),
+        ("stop", _) => TGSBleCarRequest::Action(TGSTeslaCarCommand::StopCharging),
+        ("amps", Some(v)) => TGSBleCarRequest::Action(TGSTeslaCarCommand::SetChargingAmps(v)),
+        ("limit", Some(v)) => TGSBleCarRequest::Action(TGSTeslaCarCommand::SetChargeLimit(v)),
         ("amps", None) | ("limit", None) => {
+            warn!("[http_api:handle_car_command] Exit, command '{}' needs a 'value' query param", params.command);
             return (StatusCode::BAD_REQUEST, Json(json!({ "error": "missing 'value' query param" })));
         }
         (other, _) => {
+            warn!("[http_api:handle_car_command] Exit, unknown command '{}'", other);
             return (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("unknown command '{}'", other) })));
         }
     };
-    send_car_command(&state, command).await
+    debug!("  --> resolved request {:?}", request);
+    send_car_request(&state, request).await
 }

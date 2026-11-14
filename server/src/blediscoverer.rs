@@ -22,7 +22,7 @@ use btleplug::api::{Central, CentralEvent, CentralState, Manager as _, Periphera
 use btleplug::platform::{Adapter, Manager, Peripheral, PeripheralId};
 use futures::StreamExt;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, warn, Instrument, Span};
 
 use crate::application::TGSApplication;
 use crate::blecar::{ble_name_for_vin, BleError, TGSBleCar, TGSTeslaState, TGSBleCarReply, TGSBleCarRequest};
@@ -47,7 +47,7 @@ pub struct TGSBLEDiscoverer
 
 }
 
-pub async fn ble_discoverer_run( state: Arc<TGSApplication>, blecar_commandchannel_rx: mpsc::Receiver<(TGSBleCarRequest, TGSBleCarReply)>) {
+pub async fn ble_discoverer_run( state: Arc<TGSApplication>, blecar_commandchannel_rx: mpsc::Receiver<(TGSBleCarRequest, TGSBleCarReply, Span)>) {
     debug!("[ble:ble_discoverer_run] Enter");
 
     let vin = state.runtime.read().await.config.tesla_vin.clone();
@@ -81,7 +81,7 @@ impl TGSBLEDiscoverer {
     }
 
     async fn run_car_link( &mut self, state: Arc<TGSApplication>, expected_name: String,
-        mut blecar_commandchannel_rx: mpsc::Receiver<(TGSBleCarRequest, TGSBleCarReply)>,
+        mut blecar_commandchannel_rx: mpsc::Receiver<(TGSBleCarRequest, TGSBleCarReply, Span)>,
     ) -> Result<(), BleError> {
         tracing::debug!("[ble:run_car_link] Enter");
 
@@ -121,9 +121,21 @@ impl TGSBLEDiscoverer {
                 // operations stay serialized in FIFO order against the events above.
                 maybe_app_request = blecar_commandchannel_rx.recv(), if rx_open => {
                     match maybe_app_request {
-                        Some((app_request, reply)) => {
-                            let result = self.handle_application_request(&bt_adapter, &state, app_request).await;
-                            let _ = reply.send(result);
+                        Some((app_request, reply, request_span)) => {
+                            // Everything logged while serving the request carries the id and
+                            // source of the caller's `ble_request` span.
+                            async {
+                                debug!("[ble:run_car_link] Request received {:?}", app_request);
+                                let started = Instant::now();
+                                let result = self.handle_application_request(&bt_adapter, &state, app_request).await;
+                                match &result {
+                                    Ok(tesla_state) => debug!("[ble:run_car_link] Request completed in {:?}, state {:?}", started.elapsed(), tesla_state),
+                                    Err(e) => warn!("[ble:run_car_link] Request failed after {:?}: {}", started.elapsed(), e),
+                                }
+                                if reply.send(result).is_err() {
+                                    debug!("[ble:run_car_link] Caller no longer waiting, reply dropped");
+                                }
+                            }.instrument(request_span).await;
                         }
                         None => {
                             info!("[ble:run_car_link] Tesla request channel closed");

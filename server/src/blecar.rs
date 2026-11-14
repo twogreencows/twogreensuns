@@ -2,6 +2,7 @@
 // These are stubs — actual values depend on the Tesla BLE protocol.
 use sha1::Sha1;
 use sha1::Digest;
+use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 use btleplug::api::{CharPropFlags, Characteristic, Peripheral as _, WriteType};
 use btleplug::platform::{Peripheral, PeripheralId};
@@ -175,7 +176,14 @@ pub type TGSBleCarReply = oneshot::Sender<Result<TGSTeslaState, BleError>>;
 /// Multi-producer handle to the BLE task's request inbox. Cloned by the
 /// dispatcher and every HTTP handler; the BLE task is the single consumer, so
 /// all Bluetooth work is serialized in FIFO order.
-pub type TGSBleCarCommandChannelTx = mpsc::Sender<(TGSBleCarRequest, TGSBleCarReply)>;
+///
+/// Each message also carries the tracing span of the caller (`ble_request`, with the request
+/// `id` and its `source`): the BLE task runs the request inside it, so every log line of the
+/// request, from the HTTP handler or the dispatcher down to the Bluetooth writes, shares the same id.
+pub type TGSBleCarCommandChannelTx = mpsc::Sender<(TGSBleCarRequest, TGSBleCarReply, tracing::Span)>;
+
+/// Source of the `id` field of the `ble_request` spans.
+pub static NEXT_BLE_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 impl TGSBleCar {
     /// Read charging status / limit / amps from the vehicle over BLE.
@@ -196,6 +204,7 @@ impl TGSBleCar {
             Some(car_server::response::ResponseMsg::VehicleData(car_server::VehicleData { charge_state: Some(charge_state), .. })) => self.update_state_from_charge_state(&charge_state),
             _ => warn!("[blecar:read_charge_state] response holds no charge state"),
         }
+        debug!("[blecar:read_charge_state] Exit, state {:?}", self.state);
         Ok(self.state.clone())
     }
 
@@ -231,6 +240,7 @@ impl TGSBleCar {
             TGSTeslaCarCommand::SetChargeLimit(p)  => self.state.charge_limit_percent = *p,
             TGSTeslaCarCommand::WakeUp             => {}
         }
+        debug!("[blecar:apply] Exit, state after {:?}: {:?}", cmd, self.state);
         Ok(())
     }
 
