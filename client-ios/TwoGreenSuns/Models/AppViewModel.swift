@@ -83,39 +83,23 @@ final class TGSInstallationEnvironment: ObservableObject {
         }
     }
 
-//    func teslaDiscover() async {
-//        do {
-//            try await api.teslaDiscover()
-//            await refreshStatus()
-//        } catch {
-//            errorMessage = error.localizedDescription
-//        }
-//    }
+    // MARK: - Car
 
-    //func teslaStartCharging() async {
-    //    do {
-//            try await api.teslaStartCharging()
-//            await refreshStatus()
-//        } catch {
-//            errorMessage = error.localizedDescription
-//        }
-//    }
-//
-//    func teslaStopCharging() async {
-//        do {
-//            try await api.teslaStopCharging()
-//            await refreshStatus()
-//        } catch {
-//            errorMessage = error.localizedDescription
-//        }
-//    }
+    @Published var isSendingCarCommand = false
 
-//    func teslaSetAmps(_ amps: Int) async {
-//        do {
-//            try await api.teslaSetAmps(amps)
-//            await refreshStatus()
-//        } catch {
-//            errorMessage = error.localizedDescription
-//        }
-//    }
+    func carStartCharging() async { await sendCarCommand("start") }
+    func carStopCharging() async { await sendCarCommand("stop") }
+    func carReadChargeState() async { await sendCarCommand("chargestate") }
+
+    /// Sends a command and stores the car state the server returns.
+    private func sendCarCommand(_ command: String, value: Int? = nil) async {
+        isSendingCarCommand = true
+        defer { isSendingCarCommand = false }
+        do {
+            let tesla = try await api.carCommand(command, value: value)
+            runtime = RuntimeResponse(inverter: runtime?.inverter, tesla: tesla)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
 }

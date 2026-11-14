@@ -6,15 +6,22 @@ private let logger = Logger(subsystem: "com.twogreensuns", category: "TGSAPIClie
 enum APIError: Error, LocalizedError {
     case invalidURL
     case httpError(Int)
+    case serverError(String)
     case decodingError(Error)
 
     var errorDescription: String? {
         switch self {
         case .invalidURL: return "Invalid server URL"
         case .httpError(let code): return "HTTP \(code)"
+        case .serverError(let message): return message
         case .decodingError(let e): return "Decoding error: \(e.localizedDescription)"
         }
     }
+}
+
+/// Shape of the `{ "error": "..." }` body the server sends on failures.
+private struct ServerErrorBody: Decodable {
+    let error: String
 }
 
 final class TGSAPIClient {
@@ -85,23 +92,14 @@ final class TGSAPIClient {
         try await put("log/level", body: Payload(level: level))
     }
 
-    // MARK: - Tesla
+    // MARK: - Car
 
-    /*func teslaDiscover() async throws {
-        try await post("tesla/discover")
+    /// `POST car/command?command=...[&value=N]`. Returns the car state after the command.
+    func carCommand(_ command: String, value: Int? = nil) async throws -> TeslaState {
+        var query = [URLQueryItem(name: "command", value: command)]
+        if let value { query.append(URLQueryItem(name: "value", value: String(value))) }
+        return try await post("car/command", query: query)
     }
-
-    func teslaStartCharging() async throws {
-        try await post("tesla/charge/start")
-    }
-
-    func teslaStopCharging() async throws {
-        try await post("tesla/charge/stop")
-    }
-
-    func teslaSetAmps(_ amps: Int) async throws {
-        try await post("tesla/charge/amps/\(amps)")
-    }*/
 
     // MARK: - Helpers
 
@@ -122,6 +120,22 @@ final class TGSAPIClient {
         request.httpMethod = "POST"
         let (_, response) = try await session.data(for: request)
         try validate(response)
+    }
+
+    /// POST with query parameters that decodes the reply. A non-2xx reply carrying
+    /// `{ "error": "..." }` is surfaced as `APIError.serverError`.
+    private func post<T: Decodable>(_ path: String, query: [URLQueryItem]) async throws -> T {
+        var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)
+        components?.queryItems = query
+        guard let url = components?.url else { throw APIError.invalidURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        let (data, response) = try await session.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            if let body = try? decoder.decode(ServerErrorBody.self, from: data) { throw APIError.serverError(body.error) }
+            throw APIError.httpError(http.statusCode)
+        }
+        return try decode(data)
     }
 
     private func put<T: Encodable>(_ path: String, body: T) async throws {

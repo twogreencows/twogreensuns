@@ -38,16 +38,17 @@ struct InverterData: Codable {
 }
 
 struct TeslaState: Codable {
+    let present: Bool
     let connected: Bool
     let plugged: Bool
     let charging: Bool
     let chargingAmps: Int
+    let chargeLimitPercent: Int
 
     enum CodingKeys: String, CodingKey {
-        case plugged = "plugged"
-        case connected = "connected"
-        case charging = "charging"
+        case present, connected, plugged, charging
         case chargingAmps = "charging_amps"
+        case chargeLimitPercent = "charge_limit_percent"
     }
 }
 
