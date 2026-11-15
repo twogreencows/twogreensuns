@@ -251,15 +251,17 @@ impl TGSBleCar {
         debug!("[blecar:ensure_connection] Enter");
         let already_connected = peripheral.is_connected().await.unwrap_or(false);
         let has_characteristics = self.bluetooth_tx.is_some() && self.bluetooth_rx.is_some();
-        debug!("  --> is_connected={} tx={} rx={}", already_connected, self.bluetooth_tx.is_some(), self.bluetooth_rx.is_some());
-        if already_connected && has_characteristics {
+        // A fresh Peripheral handle has an empty service cache, and writes fail with "Service not found" until it is filled.
+        let has_services = !peripheral.services().is_empty();
+        debug!("  --> is_connected={} tx={} rx={} services_cached={}", already_connected, self.bluetooth_tx.is_some(), self.bluetooth_rx.is_some(), has_services);
+        if already_connected && has_characteristics && has_services {
             debug!("  --> already connected with characteristics, nothing to do");
             return Ok(());
         }
 
         if already_connected {
-            // The link is up but the characteristics were never discovered: discover them now.
-            warn!("[blecar:ensure_connection] connected but ToVehicle/FromVehicle unknown, running discovery");
+            // The link is up but this peripheral handle knows no services (or the characteristics were never found): discover them now.
+            warn!("[blecar:ensure_connection] connected but services not cached on this handle, running discovery");
         } else {
             debug!("[blecar:ensure_connection] connecting to Tesla");
             peripheral.connect().await
