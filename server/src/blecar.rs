@@ -249,19 +249,34 @@ impl TGSBleCar {
     /// FromVehicle and requests the session info.
     pub async fn ensure_connection(&mut self, peripheral: &Peripheral) -> Result<(), BleError> {
         debug!("[blecar:ensure_connection] Enter");
-        if peripheral.is_connected().await.unwrap_or(false) {
+        let already_connected = peripheral.is_connected().await.unwrap_or(false);
+        let has_characteristics = self.bluetooth_tx.is_some() && self.bluetooth_rx.is_some();
+        debug!("  --> is_connected={} tx={} rx={}", already_connected, self.bluetooth_tx.is_some(), self.bluetooth_rx.is_some());
+        if already_connected && has_characteristics {
+            debug!("  --> already connected with characteristics, nothing to do");
             return Ok(());
         }
 
-        debug!("[blecar:ensure_connection] connecting to Tesla");
-        peripheral.connect().await
-            .map_err(|e| BleError::ConnectionFailed(format!("connect failed: {}", e)))?;
-        peripheral.discover_services().await.ok();
+        if already_connected {
+            // The link is up but the characteristics were never discovered: discover them now.
+            warn!("[blecar:ensure_connection] connected but ToVehicle/FromVehicle unknown, running discovery");
+        } else {
+            debug!("[blecar:ensure_connection] connecting to Tesla");
+            peripheral.connect().await
+                .map_err(|e| BleError::ConnectionFailed(format!("connect failed: {}", e)))?;
+            debug!("  --> connected");
+        }
+        match peripheral.discover_services().await {
+            Ok(()) => debug!("  --> discover_services ok"),
+            Err(e) => warn!("[blecar:ensure_connection] discover_services failed: {}", e),
+        }
 
         let from_vehicle_uuid = Uuid::parse_str(BLETESLA_FROMVEHICLE_UUID).expect("valid FromVehicle UUID constant");
         let to_vehicle_uuid = Uuid::parse_str(BLETESLA_TOVEHICLE_UUID).expect("valid ToVehicle UUID constant");
 
-        for characteristic in peripheral.characteristics() {
+        let characteristics = peripheral.characteristics();
+        debug!("  --> {} characteristics found", characteristics.len());
+        for characteristic in &characteristics {
             debug!("[blecar:ensure_connection] Enumerating characteristic {}", characteristic.uuid);
 
             if characteristic.properties.contains(CharPropFlags::NOTIFY)
@@ -271,8 +286,9 @@ impl TGSBleCar {
             }
 
             if characteristic.uuid == from_vehicle_uuid {
-                if let Err(e) = peripheral.subscribe(&characteristic).await {
-                    warn!("[blecar:ensure_connection] subscribe to FromVehicle failed: {}", e);
+                match peripheral.subscribe(characteristic).await {
+                    Ok(()) => debug!("  --> subscribed to FromVehicle"),
+                    Err(e) => warn!("[blecar:ensure_connection] subscribe to FromVehicle failed: {}", e),
                 }
                 self.bluetooth_rx = Some(characteristic.clone());
             }
@@ -280,6 +296,11 @@ impl TGSBleCar {
             if characteristic.uuid == to_vehicle_uuid {
                 self.bluetooth_tx = Some(characteristic.clone());
             }
+        }
+        debug!("  --> FromVehicle found={} ToVehicle found={}", self.bluetooth_rx.is_some(), self.bluetooth_tx.is_some());
+        if self.bluetooth_rx.is_none() || self.bluetooth_tx.is_none() {
+            let seen: Vec<String> = characteristics.iter().map(|c| c.uuid.to_string()).collect();
+            warn!("[blecar:ensure_connection] Tesla characteristics missing, seen UUIDs: {:?}", seen);
         }
 
         // Only the vehicle security domain answers while the car sleeps. The infotainment
@@ -312,46 +333,66 @@ impl TGSBleCar {
     pub async fn send_message(&self, peripheral: &Peripheral, body: &[u8], request_uuid: &[u8]) -> Result<Vec<u8>, BleError> {
         debug!("[blecar:send_message] Enter");
         let (Some(tx), Some(rx)) = (self.bluetooth_tx.as_ref(), self.bluetooth_rx.as_ref()) else {
+            warn!("[blecar:send_message] missing characteristic: tx={} rx={}", self.bluetooth_tx.is_some(), self.bluetooth_rx.is_some());
             return Err(BleError::CommandFailed("ToVehicle/FromVehicle characteristics not available".to_string()));
         };
 
         // Subscribe to the notification stream BEFORE writing so the reply can't be missed.
         let mut notifications = peripheral.notifications().await
             .map_err(|e| BleError::CommandFailed(format!("notifications stream failed: {}", e)))?;
+        debug!("  --> notifications stream acquired");
 
         let mut framed = Vec::with_capacity(body.len() + 2);
         framed.extend_from_slice(&(body.len() as u16).to_be_bytes());
         framed.extend_from_slice(body);
         debug!("  --> send hex {}", framed.as_hexa_string());
 
-        for chunk in framed.chunks(BLE_WRITE_CHUNK) {
+        let chunk_count = framed.chunks(BLE_WRITE_CHUNK).count();
+        for (index, chunk) in framed.chunks(BLE_WRITE_CHUNK).enumerate() {
             peripheral.write(tx, chunk, WriteType::WithoutResponse).await
                 .map_err(|e| BleError::CommandFailed(format!("write failed: {}", e)))?;
+            debug!("  --> wrote chunk {}/{} ({} bytes)", index + 1, chunk_count, chunk.len());
         }
+        debug!("  --> all chunks written, waiting up to {:?} for the reply to {}", BLE_REPLY_TIMEOUT, request_uuid.to_vec().as_hexa_string());
 
         // Reassemble: first 2 bytes = big-endian length, then accumulate until complete.
         let mut buffer: Vec<u8> = Vec::new();
-        let reply = tokio::time::timeout(BLE_REPLY_TIMEOUT, async {
+        let waiting = tokio::time::timeout(BLE_REPLY_TIMEOUT, async {
             while let Some(notification) = notifications.next().await {
-                if notification.uuid != rx.uuid { continue; }
-                debug!("  --> chunk hex {}", notification.value.as_hexa_string());
+                if notification.uuid != rx.uuid {
+                    debug!("  --> notification from another characteristic {} skipped", notification.uuid);
+                    continue;
+                }
+                debug!("  --> chunk ({} bytes) hex {}", notification.value.len(), notification.value.as_hexa_string());
                 buffer.extend_from_slice(&notification.value);
                 // Several frames can follow each other: take them one by one.
                 while buffer.len() >= 2 {
                     let expected = u16::from_be_bytes([buffer[0], buffer[1]]) as usize;
-                    if buffer.len() < 2 + expected { break; }
+                    if buffer.len() < 2 + expected {
+                        debug!("  --> frame incomplete: {} of {} bytes", buffer.len() - 2, expected);
+                        break;
+                    }
                     let frame: Vec<u8> = buffer.drain(..2 + expected).skip(2).collect();
                     match RoutableMessage::decode(frame.as_slice()) {
-                        Ok(message) if message.request_uuid == request_uuid => return Some(frame),
-                        Ok(message) => debug!("  --> ignoring unsolicited message {:?}", message),
+                        Ok(message) if message.request_uuid == request_uuid => {
+                            debug!("  --> frame matches our request");
+                            return Some(frame);
+                        }
+                        Ok(message) => debug!("  --> ignoring message with request_uuid {} (expected {}): {:?}", message.request_uuid.as_hexa_string(), request_uuid.to_vec().as_hexa_string(), message),
                         Err(e) => debug!("  --> ignoring undecodable message: {}", e),
                     }
                 }
             }
             None
-        }).await
-            .map_err(|_| BleError::CommandFailed("timeout waiting for car reply".to_string()))?
-            .ok_or_else(|| BleError::CommandFailed("notification stream closed".to_string()))?;
+        }).await;
+        let reply = match waiting {
+            Ok(Some(frame)) => frame,
+            Ok(None) => return Err(BleError::CommandFailed("notification stream closed".to_string())),
+            Err(_) => {
+                warn!("[blecar:send_message] timeout, {} bytes left in the reassembly buffer: {}", buffer.len(), buffer.as_hexa_string());
+                return Err(BleError::CommandFailed("timeout waiting for car reply".to_string()));
+            }
+        };
 
         debug!("  --> reply hex {}", reply.as_hexa_string());
         Ok(reply)
@@ -413,6 +454,10 @@ impl TGSBleCar {
         let computed_tag = hmac_sha256(&session_info_key, &metadata);
         let valid = computed_tag == hmac_data.tag;
         debug!("  --> validity of session is {}", valid);
+        debug!("[blecar:decipher_session_message] {:?} session: status={} counter={} clock_time={} epoch={} valid={}", domain, info.status, info.counter, info.clock_time, info.epoch.as_hexa_string(), valid);
+        if !valid {
+            warn!("[blecar:decipher_session_message] session tag mismatch for {:?} (check VIN and keys), the session is stored anyway", domain);
+        }
 
         let session = TGSBleSession {
             tag: hmac_data.tag,
@@ -508,6 +553,7 @@ impl TGSBleCar {
         let reply_bytes = self.send_message(peripheral, &message.encode_to_vec(), &message.uuid).await?;
         debug!("  --> reply hex {}", reply_bytes.as_hexa_string());
         let reply = RoutableMessage::decode(reply_bytes.as_slice()).map_err(|e| BleError::CommandFailed(format!("decode reply: {}", e)))?;
+        debug!("  --> reply from {:?}: status={:?} encrypted={}", domain, reply.signed_message_status, matches!(reply.sub_sig_data, Some(SubSigData::SignatureData(SignatureData { sig_type: Some(SigType::AesGcmResponseData(_)), .. }))));
         if let Some(status) = reply.signed_message_status.as_ref() {
             if status.signed_message_fault != 0 {
                 return Err(BleError::CommandFailed(format!("car replied with fault {} (operation status {})", status.signed_message_fault, status.operation_status)));
