@@ -10,7 +10,7 @@ use futures::StreamExt;
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 use uuid::Uuid;
 
 use crate::hex_utils::HexaString;
@@ -42,7 +42,9 @@ const SESSION_REQUEST_ATTEMPTS: u32 = 3;
 #[cfg(target_os = "macos")]
 const BLE_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(not(target_os = "macos"))]
-const BLE_REPLY_TIMEOUT: Duration = Duration::from_secs(15);
+const BLE_REPLY_TIMEOUT: Duration = Duration::from_secs(8);
+/// Error message of a reply timeout, which send_signed recovers from by renewing the session.
+const REPLY_TIMEOUT_MESSAGE: &str = "timeout waiting for car reply";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Error type
@@ -198,10 +200,13 @@ impl TGSBleCar {
         }
         let reply = self.send_signed(peripheral, domain, &payload).await?;
         let response = car_server::Response::decode(reply.as_slice()).map_err(|e| BleError::CommandFailed(format!("decode charge state response: {}", e)))?;
-        debug!("  --> response {:?}", response);
+        trace!("  --> response {:?}", response);
         Self::check_action_status(&response)?;
         match response.response_msg {
-            Some(car_server::response::ResponseMsg::VehicleData(car_server::VehicleData { charge_state: Some(charge_state), .. })) => self.update_state_from_charge_state(&charge_state),
+            Some(car_server::response::ResponseMsg::VehicleData(car_server::VehicleData { charge_state: Some(charge_state), .. })) => {
+                debug!("[blecar:read_charge_state] {}", Self::charge_state_summary(&charge_state));
+                self.update_state_from_charge_state(&charge_state);
+            }
             _ => warn!("[blecar:read_charge_state] response holds no charge state"),
         }
         debug!("[blecar:read_charge_state] Exit, state {:?}", self.state);
@@ -268,6 +273,8 @@ impl TGSBleCar {
                 .map_err(|e| BleError::ConnectionFailed(format!("connect failed: {}", e)))?;
             debug!("  --> connected");
         }
+        // A new handle or link: the car may ignore the old infotainment session, it is requested again lazily by send_signed.
+        self.infotainment_session = None;
         match peripheral.discover_services().await {
             Ok(()) => debug!("  --> discover_services ok"),
             Err(e) => warn!("[blecar:ensure_connection] discover_services failed: {}", e),
@@ -359,8 +366,10 @@ impl TGSBleCar {
 
         // Reassemble: first 2 bytes = big-endian length, then accumulate until complete.
         let mut buffer: Vec<u8> = Vec::new();
+        let mut notification_count = 0usize;
         let waiting = tokio::time::timeout(BLE_REPLY_TIMEOUT, async {
             while let Some(notification) = notifications.next().await {
+                notification_count += 1;
                 if notification.uuid != rx.uuid {
                     debug!("  --> notification from another characteristic {} skipped", notification.uuid);
                     continue;
@@ -391,8 +400,9 @@ impl TGSBleCar {
             Ok(Some(frame)) => frame,
             Ok(None) => return Err(BleError::CommandFailed("notification stream closed".to_string())),
             Err(_) => {
-                warn!("[blecar:send_message] timeout, {} bytes left in the reassembly buffer: {}", buffer.len(), buffer.as_hexa_string());
-                return Err(BleError::CommandFailed("timeout waiting for car reply".to_string()));
+                let still_connected = peripheral.is_connected().await.unwrap_or(false);
+                warn!("[blecar:send_message] timeout: still_connected={} notifications_received={} buffered_bytes={}: {}", still_connected, notification_count, buffer.len(), buffer.as_hexa_string());
+                return Err(BleError::CommandFailed(REPLY_TIMEOUT_MESSAGE.to_string()));
             }
         };
 
@@ -478,6 +488,42 @@ impl TGSBleCar {
         Ok(())
     }
 
+    /// One readable line with what we care about in the car's charge state, for the logs.
+    fn charge_state_summary(charge_state: &car_server::ChargeState) -> String {
+        use car_server::charge_state::{cable_type, OptionalBatteryLevel, OptionalChargeCurrentRequest, OptionalChargeLimitSoc, OptionalChargerActualCurrent, OptionalScheduledChargingPending, OptionalScheduledChargingStartTime};
+
+        let charging = charge_state.charging_state.as_ref().and_then(|c| c.r#type);
+        let plugged = !matches!(charge_state.conn_charge_cable.as_ref().and_then(|c| c.r#type), Some(cable_type::Type::Sna(_)) | None);
+        let limit = match charge_state.optional_charge_limit_soc {
+            Some(OptionalChargeLimitSoc::ChargeLimitSoc(percent)) => format!("{}%", percent),
+            None => "?".to_string(),
+        };
+        let level = match charge_state.optional_battery_level {
+            Some(OptionalBatteryLevel::BatteryLevel(percent)) => format!("{}%", percent),
+            None => "?".to_string(),
+        };
+        let requested_amps = match charge_state.optional_charge_current_request {
+            Some(OptionalChargeCurrentRequest::ChargeCurrentRequest(amps)) => format!("{}A", amps),
+            None => "?".to_string(),
+        };
+        let actual_amps = match charge_state.optional_charger_actual_current {
+            Some(OptionalChargerActualCurrent::ChargerActualCurrent(amps)) => format!("{}A", amps),
+            None => "?".to_string(),
+        };
+        let pending = match charge_state.optional_scheduled_charging_pending {
+            Some(OptionalScheduledChargingPending::ScheduledChargingPending(pending)) => pending.to_string(),
+            None => "?".to_string(),
+        };
+        let start = match charge_state.optional_scheduled_charging_start_time {
+            Some(OptionalScheduledChargingStartTime::ScheduledChargingStartTime(millis)) => match i64::try_from(millis).ok().and_then(chrono::DateTime::from_timestamp_millis) {
+                Some(utc) => format!("{} ({} local)", millis, utc.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M")),
+                None => format!("{} (invalid)", millis),
+            },
+            None => "none".to_string(),
+        };
+        format!("charge_state: state={:?} plugged={} level={} limit={} amps_requested={} amps_actual={} scheduled_pending={} scheduled_start={}", charging, plugged, level, limit, requested_amps, actual_amps, pending, start)
+    }
+
     /// Copies what we care about from the car's charge state into our own state.
     fn update_state_from_charge_state(&mut self, charge_state: &car_server::ChargeState) {
         use car_server::charge_state::{cable_type, charging_state, OptionalChargeCurrentRequest, OptionalChargeLimitSoc};
@@ -534,8 +580,25 @@ impl TGSBleCar {
     /// Signs `payload` for `domain`, sends it and returns the decoded reply. Requests the
     /// session first when there is none yet (for instance the infotainment one after a wake up).
     /// A reply carrying a message fault is returned as an error. Returns the reply payload, decrypted.
+    /// When the car stays silent, the session of that domain is dropped and the command is sent once more with a new one.
     async fn send_signed(&mut self, peripheral: &Peripheral, domain: Domain, payload: &[u8]) -> Result<Vec<u8>, BleError> {
         debug!("[blecar:send_signed] Enter ({:?})", domain);
+        match self.send_signed_once(peripheral, domain, payload).await {
+            Err(BleError::CommandFailed(message)) if message == REPLY_TIMEOUT_MESSAGE => {
+                warn!("[blecar:send_signed] no reply from {:?}, dropping its session and retrying once", domain);
+                match domain {
+                    Domain::VehicleSecurity => self.vcsec_session = None,
+                    Domain::Infotainment => self.infotainment_session = None,
+                    Domain::Broadcast => {}
+                }
+                self.send_signed_once(peripheral, domain, payload).await
+            }
+            other => other,
+        }
+    }
+
+    async fn send_signed_once(&mut self, peripheral: &Peripheral, domain: Domain, payload: &[u8]) -> Result<Vec<u8>, BleError> {
+        debug!("[blecar:send_signed_once] Enter ({:?})", domain);
         // A car that has just been woken up may need a few tries before the domain answers.
         for attempt in 1..=SESSION_REQUEST_ATTEMPTS {
             if self.has_session(domain) {
