@@ -156,12 +156,12 @@ pub fn dispatcher_decide_actions( inverter_data: &TGSInverterDataEntry, tesla: O
     let mut actions = Vec::new();
 
     // Protect the home battery: below 15% SoC (fraction 0.15), only charge the car inside the night window.
-    if inverter_data.battery_soc < 0.15 {
+    if inverter_data.battery_soc < 15.0 {
         // TEMPORARY: hard-coded night window (local time), edit these two values to test without waiting.
         // let night_start = NaiveTime::from_hms_opt(1, 6, 0).unwrap();
         // let night_end = NaiveTime::from_hms_opt(7, 6, 0).unwrap();
-        let night_start = NaiveTime::from_hms_opt(20, 50, 0).unwrap();
-        let night_end = NaiveTime::from_hms_opt(21, 12, 0).unwrap();
+        let night_start = NaiveTime::from_hms_opt(21, 30, 0).unwrap();
+        let night_end = NaiveTime::from_hms_opt(22, 12, 0).unwrap();
         let in_window = now >= night_start && now < night_end;
         debug!("  --> battery SoC {:.2} < 0.15, night window active: {}", inverter_data.battery_soc, in_window);
 

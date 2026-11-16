@@ -363,7 +363,7 @@ impl TGSBleCar {
         for (index, chunk) in framed.chunks(BLE_WRITE_CHUNK).enumerate() {
             peripheral.write(tx, chunk, WriteType::WithoutResponse).await
                 .map_err(|e| BleError::CommandFailed(format!("write failed: {}", e)))?;
-            debug!("  --> wrote chunk {}/{} ({} bytes)", index + 1, chunk_count, chunk.len());
+            trace!("  --> wrote chunk {}/{} ({} bytes)", index + 1, chunk_count, chunk.len());
         }
         debug!("  --> all chunks written, waiting up to {:?} for the reply to {}", BLE_REPLY_TIMEOUT, request_uuid.to_vec().as_hexa_string());
 
@@ -374,16 +374,16 @@ impl TGSBleCar {
             while let Some(notification) = notifications.next().await {
                 notification_count += 1;
                 if notification.uuid != rx.uuid {
-                    debug!("  --> notification from another characteristic {} skipped", notification.uuid);
+                    trace!("  --> notification from another characteristic {} skipped", notification.uuid);
                     continue;
                 }
-                debug!("  --> chunk ({} bytes) hex {}", notification.value.len(), notification.value.as_hexa_string());
+                trace!("  --> chunk ({} bytes) hex {}", notification.value.len(), notification.value.as_hexa_string());
                 buffer.extend_from_slice(&notification.value);
                 // Several frames can follow each other: take them one by one.
                 while buffer.len() >= 2 {
                     let expected = u16::from_be_bytes([buffer[0], buffer[1]]) as usize;
                     if buffer.len() < 2 + expected {
-                        debug!("  --> frame incomplete: {} of {} bytes", buffer.len() - 2, expected);
+                        trace!("  --> frame incomplete: {} of {} bytes", buffer.len() - 2, expected);
                         break;
                     }
                     let frame: Vec<u8> = buffer.drain(..2 + expected).skip(2).collect();
