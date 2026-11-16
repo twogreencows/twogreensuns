@@ -41,6 +41,7 @@ use std::path::PathBuf;
 use chrono::NaiveTime;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use tracing::level_filters::LevelFilter;
 use tracing::{debug, error, info};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -59,6 +60,11 @@ pub struct TGSDispatcherConfiguration {
     pub polling_interval_seconds: u16,
     pub tesla_vin: Option<String>,
     pub tesla_max_charging_amps: u8,
+    /// When true, the dispatcher must not act on the car.
+    #[serde(default)]
+    pub bypass: bool,
+    #[serde(default = "default_log_level", with = "level_filter_serde")]
+    pub log_level: LevelFilter,
 }
 
 impl TGSDispatcherConfiguration {
@@ -192,6 +198,38 @@ impl Default for TGSDispatcherConfiguration {
             polling_interval_seconds: 600,
             tesla_vin: None,
             tesla_max_charging_amps: 16,
+            bypass: false,
+            log_level: default_log_level(),
         }
+    }
+}
+
+/// Default of `log_level` when the field is missing from a stored configuration.
+/// This is a function and not a constant because serde's `default = "..."` attribute
+/// only accepts the path of a function.
+fn default_log_level() -> LevelFilter {
+    LevelFilter::DEBUG
+}
+
+/// Stores a `LevelFilter` as its text form (for example "debug"), because `LevelFilter`
+/// has no serde support of its own. These two functions exist because serde's
+/// `with = "..."` attribute requires a module providing `serialize` and `deserialize`.
+mod level_filter_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use tracing::level_filters::LevelFilter;
+    use tracing::warn;
+
+    pub fn serialize<S: Serializer>(level: &LevelFilter, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(level)
+    }
+
+    /// An unknown level falls back to DEBUG instead of failing, so that a typo cannot
+    /// make the whole configuration file unreadable.
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<LevelFilter, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Ok(text.parse().unwrap_or_else(|_| {
+            warn!("[configuration:level_filter_serde] unknown log level {:?}, using debug", text);
+            LevelFilter::DEBUG
+        }))
     }
 }

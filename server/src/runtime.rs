@@ -1,5 +1,4 @@
 use std::fmt;
-use tracing_subscriber::filter::LevelFilter;
 use uuid::Uuid;
 use crate::configuration::TGSDispatcherConfiguration;
 use crate::blecar::TGSTeslaCarCommand;
@@ -68,7 +67,6 @@ impl fmt::Display for TGSPlatform {
 ///                                       otherwise the machine hostname
 /// * `tgsbox_server_httport`           — TCP port the HTTP API listens on
 /// * `tgsbox_platform`                 — detected at compile time
-/// * `tgsbox_log_level`                — from `TWOGREENSUNS_LOG`, defaults to INFO
 pub struct TGSDispatcherRuntime {
     pub config: TGSDispatcherConfiguration,
     pub tgsdevice_inverter_ipv4_address: String,
@@ -78,21 +76,11 @@ pub struct TGSDispatcherRuntime {
     pub tgsbox_server_hostname: String,
     pub tgsbox_server_httport: u16,
     pub tgsbox_platform: TGSPlatform,
-    pub tgsbox_log_level: LevelFilter,
 }
 
 impl TGSDispatcherRuntime {
-    /// Reads `TWOGREENSUNS_LOG`, defaulting to `INFO` when unset or unparsable.
-    pub fn detect_log_level() -> LevelFilter {
-        std::env::var("TWOGREENSUNS_LOG")
-            .ok()
-            .and_then(|v| v.parse::<LevelFilter>().ok())
-            .unwrap_or(LevelFilter::DEBUG)
-    }
-
     pub fn new( config: TGSDispatcherConfiguration, inverter_ipv4_address: String) -> Self {
         let platform = TGSPlatform::detect();
-        let log_level = Self::detect_log_level();
         let hostname = if config.installation_display_name.is_empty() {
             mdns_get_hostname()
         } else {
@@ -105,7 +93,6 @@ impl TGSDispatcherRuntime {
             tgsbox_server_hostname: hostname,
             tgsbox_server_httport: 8080,
             tgsbox_platform: platform,
-            tgsbox_log_level: log_level,
         }
     }
 }

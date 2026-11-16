@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
-use chrono::{NaiveTime, Utc};
+use chrono::{Local, NaiveTime, Utc};
 use reqwest::Client;
 use tokio::sync::oneshot;
 use tokio::time::{sleep, Duration};
@@ -12,9 +12,6 @@ use crate::application::TGSApplication;
 use crate::blecar::{TGSTeslaCarCommand, TGSTeslaState, TGSBleCarRequest, NEXT_BLE_REQUEST_ID};
 use crate::configuration::TGSDispatcherConfiguration;
 use crate::fronius::{fronius_fetch_data, TGSInverterDataEntry};
-
-/// While true, the dispatcher decides and records its actions but never sends them to the car.
-const DISPATCHER_DRY_RUN: bool = true;
 
 pub async fn dispatcher_run(state: Arc<TGSApplication>) {
     debug!("[dispatcher:dispatcher_run] Starting dispatcher");
@@ -52,9 +49,10 @@ pub async fn dispatcher_run(state: Arc<TGSApplication>) {
                     now.format("%Y-%m-%d %H:%M:%S UTC"), data.ac_voltage, data.p_pv, data.p_load, data.p_grid, data.p_akku
                 );
 
-                let actions = {
+                // While bypass is on, the dispatcher decides and records its actions but never sends them to the car.
+                let (actions, bypass) = {
                     let runtime = state.runtime.read().await;
-                    dispatcher_decide_actions(&data, tesla.as_ref(), &runtime.config, now.time())
+                    (dispatcher_decide_actions(&data, tesla.as_ref(), &runtime.config, now.with_timezone(&Local).time()), runtime.config.bypass)
                 };
 
                 if let Err(e) = state.storage.write_event(now, &data, tesla.as_ref(), &actions) {
@@ -66,8 +64,8 @@ pub async fn dispatcher_run(state: Arc<TGSApplication>) {
 
                 if actions.is_empty() {
                     debug!("  --> no Tesla action required");
-                } else if DISPATCHER_DRY_RUN {
-                    info!("  --> DRY RUN, would send Tesla commands {:?}", actions);
+                } else if bypass {
+                    info!("  --> BYPASS, would send Tesla commands {:?}", actions);
                 } else {
                     for action in actions {
                         debug!("  --> sending Tesla command {:?}", action);
@@ -148,45 +146,52 @@ fn dispatcher_compute_target_amps(_data: &TGSInverterDataEntry, max_amps: f64) -
 ///    If amps >= 1: set the charging amps (truncated to a whole number) and start charging if the
 ///    car is idle.
 /// 3. Otherwise (no solar, or less than 1A): stop if charging, else do nothing.
-pub fn dispatcher_decide_actions(
-    data: &TGSInverterDataEntry,
-    tesla: Option<&TGSTeslaState>,
-    cfg: &TGSDispatcherConfiguration,
-    _now: NaiveTime,
-) -> Vec<TGSTeslaCarCommand> {
-    debug!("[dispatcher:dispatcher_decide_actions] Enter");
+pub fn dispatcher_decide_actions( inverter_data: &TGSInverterDataEntry, tesla: Option<&TGSTeslaState>, 
+            cfg: &TGSDispatcherConfiguration, now: NaiveTime) -> Vec<TGSTeslaCarCommand> {
+
+    debug!("[dispatcher:dispatcher_decide_actions] Enter {:?}", now);
     let max_amps = cfg.tesla_max_charging_amps as f64;
     let charging_now = tesla.map(|t| t.charging).unwrap_or(false);
 
     let mut actions = Vec::new();
 
-    // Protect the home battery: below 15% SoC (fraction 0.15), never charge the car.
-    if data.battery_soc < 0.15 {
-        debug!("  --> battery SoC {:.2} < 0.15, car charging not allowed", data.battery_soc);
-        if charging_now {
+    // Protect the home battery: below 15% SoC (fraction 0.15), only charge the car inside the night window.
+    if inverter_data.battery_soc < 0.15 {
+        // TEMPORARY: hard-coded night window (local time), edit these two values to test without waiting.
+        // let night_start = NaiveTime::from_hms_opt(1, 6, 0).unwrap();
+        // let night_end = NaiveTime::from_hms_opt(7, 6, 0).unwrap();
+        let night_start = NaiveTime::from_hms_opt(20, 30, 0).unwrap();
+        let night_end = NaiveTime::from_hms_opt(21, 0, 0).unwrap();
+        let in_window = now >= night_start && now < night_end;
+        debug!("  --> battery SoC {:.2} < 0.15, night window active: {}", inverter_data.battery_soc, in_window);
+
+        if in_window && !charging_now {
+            actions.push(TGSTeslaCarCommand::StartCharging);
+        } else if !in_window && charging_now {
             actions.push(TGSTeslaCarCommand::StopCharging);
         }
         debug!("[dispatcher:dispatcher_decide_actions] Exit");
         return actions;
     }
 
-    if data.p_pv > 0.0 {
-        let target_amps = dispatcher_compute_target_amps(data, max_amps);
+    if inverter_data.p_pv > 0.0 {
+        let target_amps = dispatcher_compute_target_amps(inverter_data, max_amps);
         debug!("  --> solar active: target={:.2}A max={:.0}A", target_amps, max_amps);
 
-        if target_amps >= 1.0 {
+        if target_amps > 0.0 {
             actions.push(TGSTeslaCarCommand::SetChargingAmps(target_amps as u8));
             if !charging_now {
                 actions.push(TGSTeslaCarCommand::StartCharging);
             }
             debug!("[dispatcher:dispatcher_decide_actions] Exit");
             return actions;
+        } else {
+            if charging_now {
+                actions.push(TGSTeslaCarCommand::StopCharging);
+            }
         }
     }
 
-    if charging_now {
-        actions.push(TGSTeslaCarCommand::StopCharging);
-    }
     debug!("[dispatcher:dispatcher_decide_actions] Exit");
     actions
 }

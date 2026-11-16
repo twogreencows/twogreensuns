@@ -72,7 +72,7 @@ async fn main() {
     let runtime = TGSDispatcherRuntime::new(config, String::new());
 
         //init log level and put layer
-    let level = runtime.tgsbox_log_level;
+    let level = runtime.config.log_level;
     info!("level is {level}");
     let (filter_layer, reload_handle) = reload::Layer::new(level);
     tracing_subscriber::registry().with(filter_layer).with(fmt::layer().event_format(AlignedFormatter)).init();

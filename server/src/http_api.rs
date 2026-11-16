@@ -27,7 +27,7 @@ pub async fn http_api_run(state: Arc<TGSApplication>, port: u16) {
     debug!("  --> binding on port {}", port);
 
     let app = Router::new()
-        .route("/api/v1/runtime", get(handle_get_runtime).put(handle_put_runtime))
+        .route("/api/v1/runtime", get(handle_get_runtime))
         .route("/api/v1/config", get(handle_get_config))
         .route("/api/v1/config", put(handle_put_config))
         .route("/api/v1/events", get(handle_get_events))
@@ -65,13 +65,36 @@ async fn handle_get_config(
     Json(configuration)
 }
 
-async fn handle_put_config( State(state): State<Arc<TGSApplication>>, Json(updated_configuration): Json<TGSDispatcherConfiguration>) -> StatusCode {
+/// Replaces the configuration. `bypass` and `log_level` are optional in the body: when absent the
+/// current values are kept. A `log_level` that is present is applied to the running logger as well as stored.
+async fn handle_put_config(State(state): State<Arc<TGSApplication>>, Json(body): Json<Value>) -> Result<StatusCode, (StatusCode, Json<Value>)> {
     debug!("[http_api:handle_put_config] Writing new configuration");
-    debug!("  --> writing new configuration");
+    let mut updated_configuration: TGSDispatcherConfiguration = serde_json::from_value(body.clone())
+        .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": e.to_string() }))))?;
+
+    // The deserializer turns an unknown level into debug: reject it here instead.
+    if let Some(level) = body.get("log_level") {
+        if !level.as_str().is_some_and(|text| text.parse::<LevelFilter>().is_ok()) {
+            return Err((StatusCode::BAD_REQUEST, Json(json!({ "error": format!("invalid log level: {}", level) }))));
+        }
+    }
+
     let mut runtime = state.runtime.write().await;
+    if body.get("bypass").is_none() {
+        debug!("  --> no bypass in the request, keeping {}", runtime.config.bypass);
+        updated_configuration.bypass = runtime.config.bypass;
+    }
+    if body.get("log_level").is_none() {
+        debug!("  --> no log_level in the request, keeping {}", runtime.config.log_level);
+        updated_configuration.log_level = runtime.config.log_level;
+    } else {
+        debug!("  --> applying log level {}", updated_configuration.log_level);
+        (state.log_level_setter)(&updated_configuration.log_level.to_string())
+            .map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))))?;
+    }
     runtime.config = updated_configuration;
     runtime.config.save();
-    StatusCode::OK
+    Ok(StatusCode::OK)
 }
 
 #[derive(Deserialize)]
@@ -127,32 +150,6 @@ async fn handle_get_events(
     Ok(Json(events))
 }
 
-#[derive(Deserialize)]
-struct TGSRuntimeLogLevelUpdate {
-    log_level: String,
-}
-
-async fn handle_put_runtime(
-    State(state): State<Arc<TGSApplication>>,
-    Json(updated_log_level): Json<TGSRuntimeLogLevelUpdate>,
-) -> (StatusCode, Json<Value>) {
-    debug!("[http_api:handle_put_runtime] Writing new log level");
-    debug!("  --> new log level = '{}'", updated_log_level.log_level);
-    let new_level: LevelFilter = match updated_log_level.log_level.parse() {
-        Ok(l) => l,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("invalid log level: '{}'", updated_log_level.log_level) })),
-            );
-        }
-    };
-    if let Err(e) = (state.log_level_setter)(&updated_log_level.log_level) {
-        return (StatusCode::BAD_REQUEST, Json(json!({ "error": e })));
-    }
-    state.runtime.write().await.tgsbox_log_level = new_level;
-    (StatusCode::OK, Json(json!({ "log_level": updated_log_level.log_level })))
-}
 /// Forward a request (a state read or a charging command) to the BLE task and return the
 /// resulting Tesla state.
 ///
