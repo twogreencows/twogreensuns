@@ -149,7 +149,7 @@ fn dispatcher_compute_target_amps(_data: &TGSInverterDataEntry, max_amps: f64) -
 pub fn dispatcher_decide_actions( inverter_data: &TGSInverterDataEntry, tesla: Option<&TGSTeslaState>, 
             cfg: &TGSDispatcherConfiguration, now: NaiveTime) -> Vec<TGSTeslaCarCommand> {
 
-    debug!("[dispatcher:dispatcher_decide_actions] Enter {:?}", now);
+    debug!("[dispatcher:dispatcher_decide_actions] Enter {:?} {:?}", now, inverter_data);
     let max_amps = cfg.tesla_max_charging_amps as f64;
     let charging_now = tesla.map(|t| t.charging).unwrap_or(false);
 
@@ -160,8 +160,8 @@ pub fn dispatcher_decide_actions( inverter_data: &TGSInverterDataEntry, tesla: O
         // TEMPORARY: hard-coded night window (local time), edit these two values to test without waiting.
         // let night_start = NaiveTime::from_hms_opt(1, 6, 0).unwrap();
         // let night_end = NaiveTime::from_hms_opt(7, 6, 0).unwrap();
-        let night_start = NaiveTime::from_hms_opt(20, 30, 0).unwrap();
-        let night_end = NaiveTime::from_hms_opt(21, 0, 0).unwrap();
+        let night_start = NaiveTime::from_hms_opt(20, 50, 0).unwrap();
+        let night_end = NaiveTime::from_hms_opt(21, 12, 0).unwrap();
         let in_window = now >= night_start && now < night_end;
         debug!("  --> battery SoC {:.2} < 0.15, night window active: {}", inverter_data.battery_soc, in_window);
 
