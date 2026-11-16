@@ -39,7 +39,7 @@ tokio::join!(dispatcher_run, http_api_run, mdns_run)
 ```
 
 **Modules:**
-- `main.rs` — entry point, tracing init (`TWOGREENSUNS_LOG` env var, default DEBUG)
+- `main.rs` — entry point, tracing init (level from the stored configuration `log_level`, default DEBUG)
 - `app_state.rs` — `AppState { config, inverter_state, tesla_state, tesla, log_level_setter }`
 - `configuration.rs` — `TwoGreenSunsDispatcherConfiguration`, persists to `~/.twogreensuns/configurations.json`
 - `fronius.rs` — `fronius_fetch_data()`, parses `/solar_api/v1/GetPowerFlowRealtimeData.fcgi`
@@ -54,8 +54,7 @@ tokio::join!(dispatcher_run, http_api_run, mdns_run)
 ```
 GET  /api/v1/status
 GET  /api/v1/config
-PUT  /api/v1/config
-PUT  /api/v1/log/level          body: { "level": "debug|info|warn|error" }
+PUT  /api/v1/config             optional "bypass" and "log_level" keys keep their current value when omitted
 POST /api/v1/tesla/discover
 POST /api/v1/tesla/charge/start
 POST /api/v1/tesla/charge/stop
@@ -112,8 +111,8 @@ Config file: `~/.twogreensuns/configurations.json`
 
 ## Logging
 
-Env var `TWOGREENSUNS_LOG` sets level (default: `debug`).
-Runtime: `PUT /api/v1/log/level` with `{ "level": "info" }`.
+The level is the `log_level` of the stored configuration (default: `debug`), applied at startup.
+Runtime: `PUT /api/v1/config` with `"log_level": "info"` in the body (stored in the configuration and applied immediately).
 Format: `[file:fn] Enter/Exit`, `  --> step`.
 
 ## Working Agreement

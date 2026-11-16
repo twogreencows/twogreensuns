@@ -105,6 +105,7 @@ struct SettingsView: View {
                 costSection
                 inverterSection
                 teslaSection
+                dispatcherSection
                 editSection
             }
         } else {
@@ -343,6 +344,27 @@ struct SettingsView: View {
                     Text(config?.pollingIntervalMinutes.formatted() ?? "")
                         .foregroundStyle(.secondary)
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var dispatcherSection: some View {
+        Section("Dispatcher") {
+            if isEditing {
+                Toggle("Bypass car control", isOn: Binding(
+                    get: { config?.bypass ?? false },
+                    set: { config?.bypass = $0 }
+                ))
+                Picker("Log level", selection: Binding(
+                    get: { TGSLogLevel(rawValue: config?.logLevel.uppercased() ?? "") ?? .debug },
+                    set: { config?.logLevel = $0.rawValue }
+                )) {
+                    ForEach(TGSLogLevel.allCases) { Text($0.title).tag($0) }
+                }
+            } else {
+                LabeledContent("Bypass car control", value: (config?.bypass ?? false) ? "On" : "Off")
+                LabeledContent("Log level", value: (config?.logLevel ?? "").capitalized)
             }
         }
     }

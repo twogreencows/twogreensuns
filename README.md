@@ -27,11 +27,8 @@ cd server
 # Build
 cargo build
 
-# Run (default port 8080, log level DEBUG)
+# Run (default port 8080, log level from the stored configuration, DEBUG by default)
 cargo run
-
-# Run with a custom log level
-TWOGREENSUNS_LOG=info cargo run
 
 # Run without mDNS advertising
 cargo run -- --no-bonjour

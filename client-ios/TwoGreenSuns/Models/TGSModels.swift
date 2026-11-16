@@ -44,11 +44,13 @@ struct TeslaState: Codable {
     let charging: Bool
     let chargingAmps: Int
     let chargeLimitPercent: Int
+    let currentChargeLevel: Int
 
     enum CodingKeys: String, CodingKey {
         case present, connected, plugged, charging
         case chargingAmps = "charging_amps"
         case chargeLimitPercent = "charge_limit_percent"
+        case currentChargeLevel = "current_charge_level"
     }
 }
 
@@ -132,6 +134,13 @@ struct TimeSegment: Codable {
     }
 }
 
+/// Matches the tracing `LevelFilter` names the server writes to `log_level`.
+enum TGSLogLevel: String, CaseIterable, Identifiable {
+    case trace = "TRACE", debug = "DEBUG", info = "INFO", warn = "WARN", error = "ERROR", off = "OFF"
+    var id: Self { self }
+    var title: String { rawValue.capitalized }
+}
+
 struct TGSConfiguration: Codable {
     var uuid: String
     var installationDisplayName: String
@@ -141,6 +150,10 @@ struct TGSConfiguration: Codable {
     var teslaVin: String?
     var teslaMaxChargingAmps: Int
     var providerCosts:[TimeSegment]
+    /// When true the dispatcher observes but never commands the car.
+    var bypass: Bool
+    /// Kept as a string so an unexpected server value still decodes; see `TGSLogLevel`.
+    var logLevel: String
 
     enum CodingKeys: String, CodingKey {
         case uuid
@@ -151,6 +164,8 @@ struct TGSConfiguration: Codable {
         case teslaVin = "tesla_vin"
         case teslaMaxChargingAmps = "tesla_max_charging_amps"
         case providerCosts = "provider_costs"
+        case bypass
+        case logLevel = "log_level"
     }
 
     var pollingIntervalMinutes: Double {

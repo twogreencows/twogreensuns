@@ -116,6 +116,19 @@ private struct TeslaStatusCard: View {
     var body: some View {
         GroupBox("Tesla") {
             Image("tesla")
+                .overlay(alignment: .topTrailing) {
+                    // Battery level badge: current charge / charge limit
+                    HStack(spacing: 4) {
+                        Image(systemName: "battery.100percent", variableValue: Double(state.currentChargeLevel) / 100)
+                        Text("\(state.currentChargeLevel)% / \(state.chargeLimitPercent)%")
+                            .monospacedDigit()
+                    }
+                    .font(.caption.bold())
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.thinMaterial, in: Capsule())
+                    .padding(6)
+                }
             LabeledContent("Connected", value: state.connected ? "Yes" : "No")
             LabeledContent("Plugged", value: state.plugged ? "Yes" : "No")
             LabeledContent("Charging", value: state.charging ? "Yes" : "No")
