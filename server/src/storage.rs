@@ -138,6 +138,8 @@ impl TGSStorage {
                     charging: r.get(11)?,
                     charging_amps: r.get(12)?,
                     charge_limit_percent: r.get(13)?,
+                    // Not persisted yet (no column), so stored events always report 0.
+                    ..Default::default()
                 }),
             };
             let actions_json: String = r.get(14)?;

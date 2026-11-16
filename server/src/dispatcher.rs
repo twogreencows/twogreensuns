@@ -13,6 +13,9 @@ use crate::blecar::{TGSTeslaCarCommand, TGSTeslaState, TGSBleCarRequest, NEXT_BL
 use crate::configuration::TGSDispatcherConfiguration;
 use crate::fronius::{fronius_fetch_data, TGSInverterDataEntry};
 
+/// While true, the dispatcher decides and records its actions but never sends them to the car.
+const DISPATCHER_DRY_RUN: bool = true;
+
 pub async fn dispatcher_run(state: Arc<TGSApplication>) {
     debug!("[dispatcher:dispatcher_run] Starting dispatcher");
 
@@ -63,6 +66,8 @@ pub async fn dispatcher_run(state: Arc<TGSApplication>) {
 
                 if actions.is_empty() {
                     debug!("  --> no Tesla action required");
+                } else if DISPATCHER_DRY_RUN {
+                    info!("  --> DRY RUN, would send Tesla commands {:?}", actions);
                 } else {
                     for action in actions {
                         debug!("  --> sending Tesla command {:?}", action);
@@ -74,8 +79,15 @@ pub async fn dispatcher_run(state: Arc<TGSApplication>) {
             Err(e) => error!("[dispatcher:dispatcher_run] Inverter fetch error: {}", e),
         }
 
-        debug!("  --> sleeping {}s before next poll (inverter = {})", interval_seconds, base_url);
-        sleep(Duration::from_secs(interval_seconds as u64)).await;
+        let sleep_duration = if interval_seconds == 300 || interval_seconds == 600 {
+            // Align on the wall clock (:00, :05, :10... or :00, :10, :20...) so the logs and events are easier to read.
+            let interval_millis = interval_seconds as i64 * 1000;
+            Duration::from_millis((interval_millis - Utc::now().timestamp_millis() % interval_millis) as u64)
+        } else {
+            Duration::from_secs(interval_seconds as u64)
+        };
+        debug!("  --> sleeping {:?} before next poll (inverter = {})", sleep_duration, base_url);
+        sleep(sleep_duration).await;
     }
 }
 

@@ -81,6 +81,9 @@ pub struct TGSTeslaState {
     pub charging_amps: u8,
     /// The current charge limit
     pub charge_limit_percent: u8,
+    /// The battery charge level in percent
+    #[serde(default)]
+    pub current_charge_level: u8,
 }
 
 
@@ -526,7 +529,7 @@ impl TGSBleCar {
 
     /// Copies what we care about from the car's charge state into our own state.
     fn update_state_from_charge_state(&mut self, charge_state: &car_server::ChargeState) {
-        use car_server::charge_state::{cable_type, charging_state, OptionalChargeCurrentRequest, OptionalChargeLimitSoc};
+        use car_server::charge_state::{cable_type, charging_state, OptionalBatteryLevel, OptionalChargeCurrentRequest, OptionalChargeLimitSoc};
         debug!("[blecar:update_state_from_charge_state] Enter");
 
         if let Some(charging_state::Type::Charging(_)) = charge_state.charging_state.as_ref().and_then(|c| c.r#type) {
@@ -544,6 +547,9 @@ impl TGSBleCar {
         }
         if let Some(OptionalChargeLimitSoc::ChargeLimitSoc(percent)) = charge_state.optional_charge_limit_soc {
             self.state.charge_limit_percent = percent.clamp(0, u8::MAX as i32) as u8;
+        }
+        if let Some(OptionalBatteryLevel::BatteryLevel(percent)) = charge_state.optional_battery_level {
+            self.state.current_charge_level = percent.clamp(0, u8::MAX as i32) as u8;
         }
     }
 
