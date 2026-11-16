@@ -158,14 +158,15 @@ pub fn dispatcher_decide_actions( inverter_data: &TGSInverterDataEntry, tesla: O
     // Protect the home battery: below 15% SoC (fraction 0.15), only charge the car inside the night window.
     if inverter_data.battery_soc < 15.0 {
         // TEMPORARY: hard-coded night window (local time), edit these two values to test without waiting.
-        // let night_start = NaiveTime::from_hms_opt(1, 6, 0).unwrap();
-        // let night_end = NaiveTime::from_hms_opt(7, 6, 0).unwrap();
-        let night_start = NaiveTime::from_hms_opt(21, 30, 0).unwrap();
-        let night_end = NaiveTime::from_hms_opt(22, 12, 0).unwrap();
+        let night_start = NaiveTime::from_hms_opt(1, 6, 0).unwrap();
+        let night_end = NaiveTime::from_hms_opt(7, 6, 0).unwrap();
+        //let night_start = NaiveTime::from_hms_opt(21, 30, 0).unwrap();
+        //let night_end = NaiveTime::from_hms_opt(22, 12, 0).unwrap();
         let in_window = now >= night_start && now < night_end;
         debug!("  --> battery SoC {:.2} < 0.15, night window active: {}", inverter_data.battery_soc, in_window);
 
-        if in_window && !charging_now {
+        let below_limit = tesla.map(|t| t.current_charge_level < t.charge_limit_percent).unwrap_or(false);
+        if in_window && !charging_now && below_limit {
             actions.push(TGSTeslaCarCommand::StartCharging);
         } else if !in_window && charging_now {
             actions.push(TGSTeslaCarCommand::StopCharging);
@@ -177,6 +178,7 @@ pub fn dispatcher_decide_actions( inverter_data: &TGSInverterDataEntry, tesla: O
     if inverter_data.p_pv > 0.0 {
         let target_amps = dispatcher_compute_target_amps(inverter_data, max_amps);
         debug!("  --> solar active: target={:.2}A max={:.0}A", target_amps, max_amps);
+
 
         if target_amps > 0.0 {
             actions.push(TGSTeslaCarCommand::SetChargingAmps(target_amps as u8));

@@ -389,7 +389,7 @@ impl TGSBleCar {
                     let frame: Vec<u8> = buffer.drain(..2 + expected).skip(2).collect();
                     match RoutableMessage::decode(frame.as_slice()) {
                         Ok(message) if message.request_uuid == request_uuid => {
-                            debug!("  --> frame matches our request");
+                            trace!("  --> frame matches our request");
                             return Some(frame);
                         }
                         Ok(message) => debug!("  --> ignoring message with request_uuid {} (expected {}): {:?}", message.request_uuid.as_hexa_string(), request_uuid.to_vec().as_hexa_string(), message),
@@ -409,7 +409,7 @@ impl TGSBleCar {
             }
         };
 
-        debug!("  --> reply hex {}", reply.as_hexa_string());
+        trace!("  --> reply hex {}", reply.as_hexa_string());
         Ok(reply)
     }
 
@@ -622,7 +622,7 @@ impl TGSBleCar {
             _ => return Err(BleError::CommandFailed("signed message without AES-GCM data".to_string())),
         };
         let reply_bytes = self.send_message(peripheral, &message.encode_to_vec(), &message.uuid).await?;
-        debug!("  --> reply hex {}", reply_bytes.as_hexa_string());
+        trace!("  --> reply hex {}", reply_bytes.as_hexa_string());
         let reply = RoutableMessage::decode(reply_bytes.as_slice()).map_err(|e| BleError::CommandFailed(format!("decode reply: {}", e)))?;
         debug!("  --> reply from {:?}: status={:?} encrypted={}", domain, reply.signed_message_status, matches!(reply.sub_sig_data, Some(SubSigData::SignatureData(SignatureData { sig_type: Some(SigType::AesGcmResponseData(_)), .. }))));
         if let Some(status) = reply.signed_message_status.as_ref() {
