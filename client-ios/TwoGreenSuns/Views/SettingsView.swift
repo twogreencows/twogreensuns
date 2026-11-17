@@ -105,6 +105,7 @@ struct SettingsView: View {
                 costSection
                 inverterSection
                 teslaSection
+                morningTargetSection
                 dispatcherSection
                 editSection
             }
@@ -346,6 +347,56 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var morningTargetSection: some View {
+        Section {
+            ForEach(1...7, id: \.self) { weekday in
+                morningTargetRow(for: weekday)
+            }
+        } header: {
+            Text("Morning charge target")
+        } footer: {
+            Text("A day without a target is ignored.")
+        }
+    }
+
+    @ViewBuilder
+    private func morningTargetRow(for weekday: Int) -> some View {
+        let target = morningTargetBinding(for: weekday)
+        // Server weekday 1 is Monday, while weekdaySymbols starts on Sunday.
+        let name = Calendar.current.weekdaySymbols[weekday % 7]
+        if isEditing {
+            VStack(alignment: .leading) {
+                Toggle(name, isOn: Binding(
+                    get: { target.wrappedValue != nil },
+                    set: { target.wrappedValue = $0 ? 50 : nil }
+                ))
+                if let percent = target.wrappedValue {
+                    Stepper("\(percent) %", value: Binding(
+                        get: { percent },
+                        set: { target.wrappedValue = $0 }
+                    ), in: 0...100, step: 5)
+                }
+            }
+        } else {
+            LabeledContent(name, value: target.wrappedValue.map { "\($0) %" } ?? "–")
+        }
+    }
+
+    /// Reads and writes one weekday's target in the config list. Setting nil removes the day.
+    private func morningTargetBinding(for weekday: Int) -> Binding<Int?> {
+        Binding(
+            get: { config?.carMorningTargetCharge.first { $0.weekday == weekday }?.percent },
+            set: { newValue in
+                config?.carMorningTargetCharge.removeAll { $0.weekday == weekday }
+                if let newValue {
+                    config?.carMorningTargetCharge.append(TGSMorningTarget(weekday: weekday, percent: newValue))
+                    config?.carMorningTargetCharge.sort { $0.weekday < $1.weekday }
+                }
+            }
+        )
     }
 
     @ViewBuilder

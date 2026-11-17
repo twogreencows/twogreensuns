@@ -17,6 +17,9 @@
     "%@ €/kWh" : {
 
     },
+    "%lld %%" : {
+
+    },
     "%lld W" : {
 
     },
@@ -38,6 +41,16 @@
     },
     "16" : {
 
+    },
+    "A day without a target is ignored." : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "Un jour sans objectif est ignoré."
+          }
+        }
+      }
     },
     "Add segment" : {
 
@@ -230,6 +243,16 @@
     },
     "Max amps" : {
 
+    },
+    "Morning charge target" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "Objectif de charge du matin"
+          }
+        }
+      }
     },
     "Newest first" : {
       "localizations" : {

@@ -155,6 +155,11 @@ struct TGSMorningTarget: Codable {
     var weekday: Int
     var percent: Int
 
+    init(weekday: Int, percent: Int) {
+        self.weekday = weekday
+        self.percent = percent
+    }
+
     init(from decoder: Decoder) throws {
         var container = try decoder.unkeyedContainer()
         weekday = try container.decode(Int.self)
