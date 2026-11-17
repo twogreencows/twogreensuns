@@ -20,6 +20,7 @@ struct InverterData: Codable {
     let acVoltage:Double
     let pAkku: Double
     let pPv: Double
+    let pInverterAc: Double
     let pLoad: Double
     let pGrid: Double
     let batterySoc:Double
@@ -28,12 +29,26 @@ struct InverterData: Codable {
 
     enum CodingKeys: String, CodingKey {
         case pPv = "p_pv"
+        case pInverterAc = "p_inverter_ac"
         case pLoad = "p_load"
         case pGrid = "p_grid"
         case pAkku = "p_akku"
         case batterySoc = "battery_soc"
         case timestamp = "timestamp"
         case  acVoltage = "ac_voltage"
+    }
+
+    /// `p_inverter_ac` is decoded leniently so events stored before the field existed still load.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        acVoltage = try container.decode(Double.self, forKey: .acVoltage)
+        pAkku = try container.decode(Double.self, forKey: .pAkku)
+        pPv = try container.decode(Double.self, forKey: .pPv)
+        pInverterAc = try container.decodeIfPresent(Double.self, forKey: .pInverterAc) ?? 0
+        pLoad = try container.decode(Double.self, forKey: .pLoad)
+        pGrid = try container.decode(Double.self, forKey: .pGrid)
+        batterySoc = try container.decode(Double.self, forKey: .batterySoc)
+        timestamp = try container.decode(Date.self, forKey: .timestamp)
     }
 }
 
@@ -134,6 +149,25 @@ struct TimeSegment: Codable {
     }
 }
 
+/// One morning target: the car battery percent wanted on a weekday, 1 = Monday to 7 = Sunday.
+/// The server writes it as a two-element array, like `TimeSegment`.
+struct TGSMorningTarget: Codable {
+    var weekday: Int
+    var percent: Int
+
+    init(from decoder: Decoder) throws {
+        var container = try decoder.unkeyedContainer()
+        weekday = try container.decode(Int.self)
+        percent = try container.decode(Int.self)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.unkeyedContainer()
+        try container.encode(weekday)
+        try container.encode(percent)
+    }
+}
+
 /// Matches the tracing `LevelFilter` names the server writes to `log_level`.
 enum TGSLogLevel: String, CaseIterable, Identifiable {
     case trace = "TRACE", debug = "DEBUG", info = "INFO", warn = "WARN", error = "ERROR", off = "OFF"
@@ -150,6 +184,8 @@ struct TGSConfiguration: Codable {
     var teslaVin: String?
     var teslaMaxChargingAmps: Int
     var providerCosts:[TimeSegment]
+    /// Not shown in the UI yet, but it must be sent back on save: the server resets it when absent.
+    var carMorningTargetCharge: [TGSMorningTarget]
     /// When true the dispatcher observes but never commands the car.
     var bypass: Bool
     /// Kept as a string so an unexpected server value still decodes; see `TGSLogLevel`.
@@ -164,6 +200,7 @@ struct TGSConfiguration: Codable {
         case teslaVin = "tesla_vin"
         case teslaMaxChargingAmps = "tesla_max_charging_amps"
         case providerCosts = "provider_costs"
+        case carMorningTargetCharge = "car_morning_target_charge"
         case bypass
         case logLevel = "log_level"
     }

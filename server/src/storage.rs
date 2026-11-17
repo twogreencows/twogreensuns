@@ -61,6 +61,7 @@ impl TGSStorage {
                  inverter_grid_power         REAL    NOT NULL,
                  inverter_battery_power      REAL    NOT NULL,
                  inverter_battery_soc        REAL    NOT NULL,
+                 inverter_ac_power           REAL,              -- AC output of the inverter, NULL on old rows
                  car_present                 INTEGER,           -- NULL = car unreachable
                  car_connected               INTEGER,
                  car_plugged                 INTEGER,
@@ -95,8 +96,8 @@ impl TGSStorage {
                  inverter_ac_voltage, inverter_photovoltaic_power, inverter_load_power,
                  inverter_grid_power, inverter_battery_power, inverter_battery_soc,
                  car_present, car_connected, car_plugged, car_charging,
-                 car_charging_amps, car_charge_limit_percent, actions)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                 car_charging_amps, car_charge_limit_percent, actions, inverter_ac_power)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
             params![
                 timestamp.timestamp_millis(),
                 round2(inv.ac_voltage), round2(inv.p_pv), round2(inv.p_load),
@@ -105,6 +106,7 @@ impl TGSStorage {
                 car.map(|c| c.charging), car.map(|c| c.charging_amps),
                 car.map(|c| c.charge_limit_percent),
                 actions_json,
+                round2(inv.p_inverter_ac),
             ],
         );
         if let Err(e) = result {
@@ -122,7 +124,7 @@ impl TGSStorage {
                     inverter_ac_voltage, inverter_photovoltaic_power, inverter_load_power,
                     inverter_grid_power, inverter_battery_power, inverter_battery_soc,
                     car_present, car_connected, car_plugged, car_charging,
-                    car_charging_amps, car_charge_limit_percent, actions
+                    car_charging_amps, car_charge_limit_percent, actions, inverter_ac_power
              FROM events
              WHERE (?1 IS NULL OR timestamp >= ?1) AND (?2 IS NULL OR timestamp < ?2)
              ORDER BY timestamp ASC",
@@ -149,6 +151,7 @@ impl TGSStorage {
                 inverter: TGSInverterDataEntry {
                     ac_voltage: r.get(2)?,
                     p_pv: r.get(3)?,
+                    p_inverter_ac: r.get::<_, Option<f64>>(15)?.unwrap_or(0.0),
                     p_load: r.get(4)?,
                     p_grid: r.get(5)?,
                     p_akku: r.get(6)?,

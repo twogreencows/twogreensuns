@@ -163,7 +163,7 @@ pub fn dispatcher_decide_actions( inverter_data: &TGSInverterDataEntry, tesla: O
         //let night_start = NaiveTime::from_hms_opt(21, 30, 0).unwrap();
         //let night_end = NaiveTime::from_hms_opt(22, 12, 0).unwrap();
         let in_window = now >= night_start && now < night_end;
-        debug!("  --> battery SoC {:.2} < 0.15, night window active: {}", inverter_data.battery_soc, in_window);
+        debug!("  --> battery SoC {:.2} < 15, night window active: {}", inverter_data.battery_soc, in_window);
 
         let below_limit = tesla.map(|t| t.current_charge_level < t.charge_limit_percent).unwrap_or(false);
         if in_window && !charging_now && below_limit {
@@ -217,6 +217,7 @@ mod tests {
         TGSInverterDataEntry {
             ac_voltage: 230.0,
             p_pv,
+            p_inverter_ac: 0.0,
             p_load,
             p_grid: 0.0,
             p_akku: 0.0,

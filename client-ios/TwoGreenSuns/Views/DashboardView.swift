@@ -67,6 +67,7 @@ private struct InverterCard: View {
                         .frame(maxWidth: .infinity, alignment: .center)
                     Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                         PowerRow(label: "Solar (PV)", value: data.pPv, color: .yellow, unit:"W")
+                        PowerRow(label: "Inverter AC", value: data.pInverterAc, color: .purple, unit:"W")
                         PowerRow(label: "House load", value: data.pLoad, color: .blue, unit:"W")
                         PowerRow(label: "Grid", value: data.pGrid, color: .orange, unit:"W")
                         PowerRow(label: "Battery", value: data.pAkku, color: .green , unit:"W")
@@ -114,25 +115,27 @@ private struct TeslaStatusCard: View {
     let state: TeslaState
 
     var body: some View {
-        GroupBox("Tesla") {
+        GroupBox {
             Image("tesla")
-                .overlay(alignment: .topTrailing) {
-                    // Battery level badge: current charge / charge limit
-                    HStack(spacing: 4) {
-                        Image(systemName: "battery.100percent", variableValue: Double(state.currentChargeLevel) / 100)
-                        Text("\(state.currentChargeLevel)% / \(state.chargeLimitPercent)%")
-                            .monospacedDigit()
-                    }
-                    .font(.caption.bold())
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(.thinMaterial, in: Capsule())
-                    .padding(6)
-                }
             LabeledContent("Connected", value: state.connected ? "Yes" : "No")
             LabeledContent("Plugged", value: state.plugged ? "Yes" : "No")
             LabeledContent("Charging", value: state.charging ? "Yes" : "No")
             LabeledContent("Amps", value: "\(state.chargingAmps) A")
+        } label: {
+            HStack {
+                Text("Tesla")
+                Spacer()
+                // Battery level badge: current charge / charge limit
+                HStack(spacing: 4) {
+                    Image(systemName: "battery.100percent", variableValue: Double(state.currentChargeLevel) / 100)
+                    Text("\(state.currentChargeLevel)% / \(state.chargeLimitPercent)%")
+                        .monospacedDigit()
+                }
+                .font(.caption.bold())
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(.thinMaterial, in: Capsule())
+            }
         }
     }
 }

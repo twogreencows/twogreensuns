@@ -1,0 +1,387 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "–" : {
+
+    },
+    "%.0f %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$.0f %2$@"
+          }
+        }
+      }
+    },
+    "%@ €/kWh" : {
+
+    },
+    "%lld W" : {
+
+    },
+    "%lld%% / %lld%%" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld%% / %2$lld%%"
+          }
+        }
+      }
+    },
+    "€/kWh" : {
+
+    },
+    "10" : {
+
+    },
+    "16" : {
+
+    },
+    "Add segment" : {
+
+    },
+    "Amps" : {
+
+    },
+    "Battery" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "Batterie"
+          }
+        }
+      }
+    },
+    "Bypass car control" : {
+
+    },
+    "Cancel" : {
+
+    },
+    "Car command failed" : {
+
+    },
+    "Charge limit" : {
+
+    },
+    "Charging" : {
+
+    },
+    "Charging amps" : {
+
+    },
+    "Chart" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "Graphique"
+          }
+        }
+      }
+    },
+    "Config" : {
+
+    },
+    "Configuration" : {
+
+    },
+    "Connected" : {
+
+    },
+    "Consumption" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "Consommation"
+          }
+        }
+      }
+    },
+    "Cost" : {
+
+    },
+    "Couldn't load config" : {
+
+    },
+    "Couldn't save configuration" : {
+
+    },
+    "Current state" : {
+
+    },
+    "Dashboard" : {
+
+    },
+    "Data" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "Données"
+          }
+        }
+      }
+    },
+    "Discover Tesla via BLE" : {
+
+    },
+    "Discovery" : {
+
+    },
+    "Dispatcher" : {
+
+    },
+    "Display" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "Affichage"
+          }
+        }
+      }
+    },
+    "Display name" : {
+
+    },
+    "Edit" : {
+
+    },
+    "Find coordinates" : {
+
+    },
+    "Get charge state" : {
+
+    },
+    "Grid" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "Réseau"
+          }
+        }
+      }
+    },
+    "HH:mm" : {
+
+    },
+    "Installation" : {
+
+    },
+    "Installations" : {
+
+    },
+    "Inverter" : {
+
+    },
+    "Inverter AC" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "Onduleur AC"
+          }
+        }
+      }
+    },
+    "Latitude" : {
+
+    },
+    "List" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "Liste"
+          }
+        }
+      }
+    },
+    "Loading config…" : {
+
+    },
+    "Loading…" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "Chargement…"
+          }
+        }
+      }
+    },
+    "Location" : {
+
+    },
+    "Log level" : {
+
+    },
+    "Longitude" : {
+
+    },
+    "Looking for TwoGreenSuns installations…" : {
+
+    },
+    "Max amps" : {
+
+    },
+    "Newest first" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "Les plus récents d’abord"
+          }
+        }
+      }
+    },
+    "No car state yet" : {
+
+    },
+    "No cost data" : {
+
+    },
+    "No data" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "Aucune donnée"
+          }
+        }
+      }
+    },
+    "No inverter data" : {
+
+    },
+    "OK" : {
+
+    },
+    "Oldest first" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "Les plus anciens d’abord"
+          }
+        }
+      }
+    },
+    "optional" : {
+
+    },
+    "Order" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "Ordre"
+          }
+        }
+      }
+    },
+    "Plugged" : {
+
+    },
+    "Poll interval (min)" : {
+
+    },
+    "Power (W)" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "Puissance (W)"
+          }
+        }
+      }
+    },
+    "Present" : {
+
+    },
+    "PV" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "PV"
+          }
+        }
+      }
+    },
+    "Save" : {
+
+    },
+    "Series" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "Série"
+          }
+        }
+      }
+    },
+    "Start charging" : {
+
+    },
+    "Stop charging" : {
+
+    },
+    "Street, city, country" : {
+
+    },
+    "Tesla" : {
+
+    },
+    "Time" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "Heure"
+          }
+        }
+      }
+    },
+    "Today" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "Aujourd’hui"
+          }
+        }
+      }
+    },
+    "Unable to connect" : {
+
+    },
+    "Value" : {
+
+    },
+    "VIN" : {
+
+    },
+    "W" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "machine_translated",
+            "value" : "W"
+          }
+        }
+      }
+    },
+    "Waiting for the first poll cycle." : {
+
+    }
+  },
+  "version" : "1.3"
+}

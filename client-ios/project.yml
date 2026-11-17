@@ -29,3 +29,5 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: co.twogreensuns.app
         DEVELOPMENT_TEAM: ""
         CODE_SIGN_STYLE: Automatic
+        SWIFT_EMIT_LOC_STRINGS: YES
+        LOCALIZATION_PREFERS_STRING_CATALOGS: YES

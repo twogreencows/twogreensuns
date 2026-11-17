@@ -12,6 +12,7 @@ use crate::application::TGSApplication;
 pub struct TGSInverterDataEntry {
     pub ac_voltage:f64,
     pub p_pv: f64,
+    pub p_inverter_ac: f64,
     pub p_load: f64,
     pub p_grid: f64,
     pub p_akku: f64,
@@ -81,16 +82,17 @@ pub async fn fronius_fetch_data( client: &reqwest::Client, base_url: &str) -> Re
     let ac_voltage = data_meter["Body"]["Data"]["0"]["Voltage_AC_Phase_1"].as_f64().unwrap_or(0.0);
     //println!("{:#?}" , data_meter["Body"]["Data"]["0"]);
     let p_pv = site["P_PV"].as_f64().unwrap_or(0.0);
+    let p_inverter_ac = inverter["P"].as_f64().unwrap_or(0.0);
     let p_load = site["P_Load"].as_f64().unwrap_or(0.0);
     let p_grid = site["P_Grid"].as_f64().unwrap_or(0.0);
     let p_akku = site["P_Akku"].as_f64().unwrap_or(0.0);
     let battery_soc = inverter["SOC"].as_f64().unwrap_or(0.0);
 
-    debug!("  --> parsed: AC_VOLTAGE = {:.00} P_PV={:.0} P_Load={:.0} P_Grid={:.0} P_Akku={:.0}", ac_voltage, p_pv, p_load, p_grid, p_akku);
+    debug!("  --> parsed: AC_VOLTAGE = {:.00} P_PV={:.0} P_AC={:.0} P_Load={:.0} P_Grid={:.0} P_Akku={:.0}", ac_voltage, p_pv, p_inverter_ac, p_load, p_grid, p_akku);
 
     if p_pv == 0.0 && p_load == 0.0 && p_grid == 0.0 && p_akku == 0.0 {
         error!("[fronius:fronius_fetch_data] All values zero — inverter may be unreachable or off");
     }
 
-    Ok(TGSInverterDataEntry{ ac_voltage, p_pv, p_load, p_grid, p_akku, battery_soc, timestamp: Utc::now() })
+    Ok(TGSInverterDataEntry{ ac_voltage, p_pv, p_inverter_ac, p_load, p_grid, p_akku, battery_soc, timestamp: Utc::now() })
 }

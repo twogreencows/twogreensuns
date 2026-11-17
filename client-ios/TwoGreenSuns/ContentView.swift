@@ -27,7 +27,7 @@ struct OneInstallationView: View {
                 .tag(1)
 
             EventsView()
-                .tabItem { Label("Données", systemImage: "list.bullet.rectangle") }
+                .tabItem { Label("Data", systemImage: "list.bullet.rectangle") }
                 .tag(2)
 
             SettingsView()

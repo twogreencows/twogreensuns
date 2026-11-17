@@ -60,6 +60,11 @@ pub struct TGSDispatcherConfiguration {
     pub polling_interval_seconds: u16,
     pub tesla_vin: Option<String>,
     pub tesla_max_charging_amps: u8,
+    /// Target car battery level (percent) wanted on the morning of each weekday.
+    /// Pairs of (weekday, percent), weekday 1 = Monday ... 7 = Sunday. Example: (1, 45) = 45% on Monday morning.
+    /// A weekday that is absent has no target.
+    #[serde(default)]
+    pub car_morning_target_charge: Vec<(u8, u8)>,
     /// When true, the dispatcher must not act on the car.
     #[serde(default)]
     pub bypass: bool,
@@ -198,6 +203,7 @@ impl Default for TGSDispatcherConfiguration {
             polling_interval_seconds: 600,
             tesla_vin: None,
             tesla_max_charging_amps: 16,
+            car_morning_target_charge: Vec::new(),
             bypass: false,
             log_level: default_log_level(),
         }
