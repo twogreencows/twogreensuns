@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
-use chrono::{Local, NaiveTime, Utc};
+use chrono::{Datelike, Local, NaiveDateTime, NaiveTime, Utc};
 use reqwest::Client;
 use tokio::sync::oneshot;
 use tokio::time::{sleep, Duration};
@@ -52,7 +52,7 @@ pub async fn dispatcher_run(state: Arc<TGSApplication>) {
                 // While bypass is on, the dispatcher decides and records its actions but never sends them to the car.
                 let (actions, bypass) = {
                     let runtime = state.runtime.read().await;
-                    (dispatcher_decide_actions(&data, tesla.as_ref(), &runtime.config, now.with_timezone(&Local).time()), runtime.config.bypass)
+                    (dispatcher_decide_actions(&data, tesla.as_ref(), &runtime.config, now.with_timezone(&Local).naive_local()), runtime.config.bypass)
                 };
 
                 if let Err(e) = state.storage.write_event(now, &data, tesla.as_ref(), &actions) {
@@ -147,7 +147,7 @@ fn dispatcher_compute_target_amps(_data: &TGSInverterDataEntry, max_amps: f64) -
 ///    car is idle.
 /// 3. Otherwise (no solar, or less than 1A): stop if charging, else do nothing.
 pub fn dispatcher_decide_actions( inverter_data: &TGSInverterDataEntry, tesla: Option<&TGSTeslaState>, 
-            cfg: &TGSDispatcherConfiguration, now: NaiveTime) -> Vec<TGSTeslaCarCommand> {
+            cfg: &TGSDispatcherConfiguration, now: NaiveDateTime) -> Vec<TGSTeslaCarCommand> {
 
     debug!("[dispatcher:dispatcher_decide_actions] Enter {:?} {:?}", now, inverter_data);
     let max_amps = cfg.tesla_max_charging_amps as f64;
@@ -155,20 +155,27 @@ pub fn dispatcher_decide_actions( inverter_data: &TGSInverterDataEntry, tesla: O
 
     let mut actions = Vec::new();
 
-    // Protect the home battery: below 15% SoC (fraction 0.15), only charge the car inside the night window.
+    // Battery charging prioritization: below 15% SoC, the home battery is charged first, so only charge the car inside the night window.
     if inverter_data.battery_soc < 15.0 {
         // TEMPORARY: hard-coded night window (local time), edit these two values to test without waiting.
         let night_start = NaiveTime::from_hms_opt(1, 6, 0).unwrap();
         let night_end = NaiveTime::from_hms_opt(7, 6, 0).unwrap();
         //let night_start = NaiveTime::from_hms_opt(21, 30, 0).unwrap();
         //let night_end = NaiveTime::from_hms_opt(22, 12, 0).unwrap();
-        let in_window = now >= night_start && now < night_end;
+        let in_window = now.time() >= night_start && now.time() < night_end;
         debug!("  --> battery SoC {:.2} < 15, night window active: {}", inverter_data.battery_soc, in_window);
 
-        let below_limit = tesla.map(|t| t.current_charge_level < t.charge_limit_percent).unwrap_or(false);
-        if in_window && !charging_now && below_limit {
+        // The morning target of the current calendar day (1 = Monday ... 7 = Sunday) can only lower the car's own charge limit.
+        let weekday = now.weekday().number_from_monday() as u8;
+        let morning_target = cfg.car_morning_target_charge.iter().find(|(day, _)| *day == weekday).map(|(_, percent)| *percent);
+        let below_target = tesla.map(|t| {
+            let target_level = morning_target.map_or(t.charge_limit_percent, |percent| percent.min(t.charge_limit_percent));
+            debug!("  --> weekday {}, morning target {:?}, car limit {}, effective target {}, level {}", weekday, morning_target, t.charge_limit_percent, target_level, t.current_charge_level);
+            t.current_charge_level < target_level
+        }).unwrap_or(false);
+        if in_window && !charging_now && below_target {
             actions.push(TGSTeslaCarCommand::StartCharging);
-        } else if !in_window && charging_now {
+        } else if charging_now && (!in_window || !below_target) {
             actions.push(TGSTeslaCarCommand::StopCharging);
         }
         debug!("[dispatcher:dispatcher_decide_actions] Exit");
@@ -211,7 +218,7 @@ mod tests {
     //! 3. Otherwise (no solar, or less than 1A of excess): stop if charging, else do nothing.
 
     use super::*;
-    use chrono::Utc;
+    use chrono::{NaiveDate, Utc};
 
     fn build_inverter_data(p_pv: f64, p_load: f64, battery_soc: f64) -> TGSInverterDataEntry {
         TGSInverterDataEntry {
@@ -233,7 +240,7 @@ mod tests {
         let inverter_data = build_inverter_data(3000.0, 500.0, 0.10);
         let tesla_state = TGSTeslaState { charging: true, ..Default::default() };
         let configuration = TGSDispatcherConfiguration { tesla_max_charging_amps: 16, ..Default::default() };
-        let current_time = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+        let current_time = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap().and_hms_opt(12, 0, 0).unwrap();
 
         let actions = dispatcher_decide_actions(&inverter_data, Some(&tesla_state), &configuration, current_time);
 
@@ -247,7 +254,7 @@ mod tests {
         let inverter_data = build_inverter_data(3000.0, 500.0, 0.10);
         let tesla_state = TGSTeslaState { charging: false, ..Default::default() };
         let configuration = TGSDispatcherConfiguration { tesla_max_charging_amps: 16, ..Default::default() };
-        let current_time = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+        let current_time = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap().and_hms_opt(12, 0, 0).unwrap();
 
         let actions = dispatcher_decide_actions(&inverter_data, Some(&tesla_state), &configuration, current_time);
 
@@ -261,7 +268,7 @@ mod tests {
         let inverter_data = build_inverter_data(3000.0, 500.0, 0.15);
         let tesla_state = TGSTeslaState { charging: true, ..Default::default() };
         let configuration = TGSDispatcherConfiguration { tesla_max_charging_amps: 16, ..Default::default() };
-        let current_time = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+        let current_time = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap().and_hms_opt(12, 0, 0).unwrap();
 
         let actions = dispatcher_decide_actions(&inverter_data, Some(&tesla_state), &configuration, current_time);
 
@@ -318,7 +325,7 @@ mod tests {
         let inverter_data = build_inverter_data(3000.0, 500.0, 0.50);
         let tesla_state = TGSTeslaState { charging: false, ..Default::default() };
         let configuration = TGSDispatcherConfiguration { tesla_max_charging_amps: 16, ..Default::default() };
-        let current_time = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+        let current_time = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap().and_hms_opt(12, 0, 0).unwrap();
 
         let actions = dispatcher_decide_actions(&inverter_data, Some(&tesla_state), &configuration, current_time);
 
@@ -331,7 +338,7 @@ mod tests {
         let inverter_data = build_inverter_data(3000.0, 500.0, 0.50);
         let tesla_state = TGSTeslaState { charging: true, ..Default::default() };
         let configuration = TGSDispatcherConfiguration { tesla_max_charging_amps: 16, ..Default::default() };
-        let current_time = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+        let current_time = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap().and_hms_opt(12, 0, 0).unwrap();
 
         let actions = dispatcher_decide_actions(&inverter_data, Some(&tesla_state), &configuration, current_time);
 
@@ -344,7 +351,7 @@ mod tests {
         let inverter_data = build_inverter_data(10000.0, 500.0, 0.50);
         let tesla_state = TGSTeslaState { charging: true, ..Default::default() };
         let configuration = TGSDispatcherConfiguration { tesla_max_charging_amps: 8, ..Default::default() };
-        let current_time = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+        let current_time = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap().and_hms_opt(12, 0, 0).unwrap();
 
         let actions = dispatcher_decide_actions(&inverter_data, Some(&tesla_state), &configuration, current_time);
 
@@ -357,7 +364,7 @@ mod tests {
         let inverter_data = build_inverter_data(0.0, 500.0, 0.50);
         let tesla_state = TGSTeslaState { charging: true, ..Default::default() };
         let configuration = TGSDispatcherConfiguration { tesla_max_charging_amps: 16, ..Default::default() };
-        let current_time = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+        let current_time = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap().and_hms_opt(12, 0, 0).unwrap();
 
         let actions = dispatcher_decide_actions(&inverter_data, Some(&tesla_state), &configuration, current_time);
 
@@ -370,7 +377,7 @@ mod tests {
         let inverter_data = build_inverter_data(0.0, 500.0, 0.50);
         let tesla_state = TGSTeslaState { charging: false, ..Default::default() };
         let configuration = TGSDispatcherConfiguration { tesla_max_charging_amps: 16, ..Default::default() };
-        let current_time = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+        let current_time = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap().and_hms_opt(12, 0, 0).unwrap();
 
         let actions = dispatcher_decide_actions(&inverter_data, Some(&tesla_state), &configuration, current_time);
 
@@ -384,7 +391,7 @@ mod tests {
         let inverter_data = build_inverter_data(100.0, 500.0, 0.50);
         let tesla_state = TGSTeslaState { charging: true, ..Default::default() };
         let configuration = TGSDispatcherConfiguration { tesla_max_charging_amps: 16, ..Default::default() };
-        let current_time = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+        let current_time = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap().and_hms_opt(12, 0, 0).unwrap();
 
         let actions = dispatcher_decide_actions(&inverter_data, Some(&tesla_state), &configuration, current_time);
 
